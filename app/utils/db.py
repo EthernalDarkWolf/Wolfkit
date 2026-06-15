@@ -102,6 +102,15 @@ def init_db():
         """
     )
 
+    # Asegurar columna foto_perfil en usuarios
+    try:
+        cursor.execute("PRAGMA table_info(usuarios)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "foto_perfil" not in cols:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN foto_perfil BLOB")
+    except Exception:
+        pass
+
     cursor.executemany(
         "INSERT OR IGNORE INTO asist (nombre_asistencia) VALUES (?)",
         [("Asistió",), ("No Asistió",)],
@@ -630,3 +639,55 @@ def update_unit(unidad_id: int, nombre_unidad: str = None, contexto: str = None,
         conn.commit()
     finally:
         conn.close()
+
+
+def update_user_profile_pic(username: str, image_bytes: bytes):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE usuarios SET foto_perfil = ? WHERE nombre_usuario = ?",
+        (image_bytes, username)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_profile_pic(username: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT foto_perfil FROM usuarios WHERE nombre_usuario = ?",
+        (username,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row["foto_perfil"] if row else None
+
+
+def update_user_credentials(old_username: str, new_username: str, new_password: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    if old_username != new_username:
+        cursor.execute("SELECT id FROM usuarios WHERE nombre_usuario = ?", (new_username,))
+        if cursor.fetchone():
+            conn.close()
+            raise ValueError("El nombre de usuario ya está registrado.")
+            
+    cursor.execute(
+        "UPDATE usuarios SET nombre_usuario = ?, contrasena = ? WHERE nombre_usuario = ?",
+        (new_username, new_password, old_username)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_credentials(username: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT contrasena FROM usuarios WHERE nombre_usuario = ?",
+        (username,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else ""
