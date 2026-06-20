@@ -1,0 +1,1 @@
+{"time": "2026-06-19T14:27:04.641026", "event": "SERVER_START", "port": 9999, "root": "C:\\Proyectos\\Wolfkit\\app\\utils\\servers\\TestServer", "bind": "0.0.0.0", "rate_limit": 60}

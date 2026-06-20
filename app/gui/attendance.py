@@ -2,6 +2,7 @@ import customtkinter as ctk
 import sqlite3
 import tkinter as tk
 import io
+import threading
 from datetime import date
 from pathlib import Path
 from tkinter import messagebox, simpledialog, filedialog
@@ -12,6 +13,11 @@ try:
 except ImportError:
     Image = None
     ImageTk = None
+
+try:
+    import psutil as _psutil
+except ImportError:
+    _psutil = None
 
 from app import APP_NAME
 from .base import GuiArchitect
@@ -59,6 +65,20 @@ def get_widget_bg(widget):
             parent = parent.master
         return "#2f2f2f"
     return bg
+
+
+def bind_mouse_wheel_recursive(widget, scrollable_frame):
+    """Recursively binds the MouseWheel event of a widget and its children to scroll the given CTkScrollableFrame."""
+    def on_mouse_wheel(event):
+        if hasattr(scrollable_frame, "_canvas"):
+            try:
+                scrollable_frame._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+    widget.bind("<MouseWheel>", on_mouse_wheel, add="+")
+    for child in widget.winfo_children():
+        bind_mouse_wheel_recursive(child, scrollable_frame)
 
 
 class SidebarTabView:
@@ -149,7 +169,11 @@ class SidebarTabView:
 
         # Map tab names to mockup sidebar names and icons
         icon_text = ""
-        if name == "Inicio":
+        if name == "Servidor":
+            icon_text = "⚡  SERVIDOR"
+        elif name == "Alojamiento":
+            icon_text = "   ↳  ALOJAMIENTO"
+        elif name == "Inicio":
             icon_text = "☖  DASHBOARD"
         elif name == "Estudiantes":
             icon_text = "田  ESTUDIANTES"
@@ -198,6 +222,14 @@ class SidebarTabView:
             else:
                 btn.configure(fg_color="transparent", text_color="#8c8da5")
 
+        # Manejo del submenu Alojamiento
+        alojamiento_btn = self.buttons.get("Alojamiento")
+        if alojamiento_btn and "Servidor" in self.buttons:
+            if name in ["Servidor", "Alojamiento"]:
+                alojamiento_btn.pack(fill="x", padx=12, pady=4, after=self.buttons["Servidor"])
+            else:
+                alojamiento_btn.pack_forget()
+
         self.active_tab = name
         # Refresh dashboard if entering Inicio
         if name == "Inicio" and hasattr(self.app_instance, "_refresh_dashboard"):
@@ -238,6 +270,8 @@ class AttendanceApp(GuiArchitect):
         self.main_content_container.grid(row=0, column=1, sticky="nsew")
 
         self.tabview = SidebarTabView(self.main_content_container, self.sidebar_frame, self)
+        self.tabview.add("Servidor")
+        self.tabview.add("Alojamiento")
         self.tabview.add("Inicio")
         self.tabview.add("Estudiantes")
         self.tabview.add("Asistencia")
@@ -245,6 +279,8 @@ class AttendanceApp(GuiArchitect):
         self.tabview.add("Unidades")
         self.tabview.add("Administración")
 
+        self._build_server_tab()
+        self._build_alojamiento_tab()
         self._build_home_tab()
         self._build_students_tab()
         self._build_attendance_tab()
@@ -267,6 +303,18 @@ class AttendanceApp(GuiArchitect):
             pass
         self.refresh_delete_menu()
         self.tabview.set("Inicio")
+
+        # Safely shut down all background server processes on exit
+        def on_app_close():
+            try:
+                from app.utils.server_manager import ServerManager
+                ServerManager().shutdown_all()
+            except Exception:
+                pass
+            self.quit()
+
+        self.protocol("WM_DELETE_WINDOW", on_app_close)
+
 
     def _build_home_tab(self):
         tab = self.tabview.tab("Inicio")
@@ -2387,3 +2435,1412 @@ class AttendanceApp(GuiArchitect):
         btns.pack(side="right", padx=15, pady=10)
         self.create_button("Guardar", command=save_settings, master=btns, width=100, fg_color="#3a77c9", hover_color="#2f61a8").pack(side="right", padx=(5, 0))
         self.create_button("Cancelar", command=cancel_settings, master=btns, width=100).pack(side="right", padx=(0, 5))
+
+    # ===========================================================================
+    # SERVER MODAL
+    # ===========================================================================
+
+    def _build_server_tab(self):
+        """Build the futuristic server management panel inside the 'Servidor' tab."""
+        from ..utils.server_manager import ServerManager
+
+        mgr = ServerManager()
+        sys_info = mgr.get_system_info()
+        self.resource_labels = {}
+
+        tab = self.tabview.tab("Servidor")
+        tab.configure(fg_color="#0d0e1a")
+
+        # ── HEADER ──────────────────────────────────────────────────────
+        header = ctk.CTkFrame(tab, fg_color="#12132a", corner_radius=12, height=70)
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        header.pack_propagate(False)
+
+        header_left = ctk.CTkFrame(header, fg_color="transparent")
+        header_left.pack(side="left", fill="y", padx=16)
+
+        ctk.CTkLabel(
+            header_left,
+            text="⚡ SERVER MANAGER",
+            font=("Arial", 20, "bold"),
+            text_color="#0fbcf9",
+        ).pack(side="left", pady=14)
+
+        ctk.CTkLabel(
+            header_left,
+            text="  —  Panel de Control de Servidores",
+            font=("Arial", 12),
+            text_color="#5a5c7a",
+        ).pack(side="left", pady=14)
+
+        header_right = ctk.CTkFrame(header, fg_color="transparent")
+        header_right.pack(side="right", fill="y", padx=16)
+
+        active_count_label = ctk.CTkLabel(
+            header_right,
+            text="● 0 activos",
+            font=("Arial", 12, "bold"),
+            text_color="#00e676",
+        )
+        active_count_label.pack(side="right", pady=14, padx=(10, 0))
+
+        total_count_label = ctk.CTkLabel(
+            header_right,
+            text="0 servidores",
+            font=("Arial", 12),
+            text_color="#8c8da5",
+        )
+        total_count_label.pack(side="right", pady=14)
+
+        # ── BODY (Left panel + Right panel) ─────────────────────────────
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        body.grid_columnconfigure(0, weight=2)
+        body.grid_columnconfigure(1, weight=3)
+        body.grid_rowconfigure(0, weight=1)
+
+        # ── LEFT PANEL: Create Server ──────────────────────────────────
+        left_panel = ctk.CTkFrame(body, fg_color="#12132a", corner_radius=12)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        left_scroll = ctk.CTkScrollableFrame(left_panel, fg_color="transparent")
+        left_scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Title
+        ctk.CTkLabel(
+            left_scroll,
+            text="CREAR SERVIDOR",
+            font=("Arial", 14, "bold"),
+            text_color="#ffffff",
+        ).pack(anchor="w", padx=16, pady=(16, 4))
+
+        ctk.CTkLabel(
+            left_scroll,
+            text="Configura los recursos del servidor",
+            font=("Arial", 10),
+            text_color="#5a5c7a",
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
+        # Server name
+        ctk.CTkLabel(left_scroll, text="NOMBRE", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(anchor="w", padx=16, pady=(8, 2))
+        server_name_entry = ctk.CTkEntry(
+            left_scroll,
+            placeholder_text="Mi Servidor",
+            fg_color="#1a1b30",
+            border_color="#2c2e4a",
+            text_color="#ffffff",
+            corner_radius=8,
+            height=36,
+        )
+        server_name_entry.pack(fill="x", padx=16, pady=(0, 10))
+
+        # Port
+        ctk.CTkLabel(left_scroll, text="PUERTO", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(anchor="w", padx=16, pady=(4, 2))
+        port_entry = ctk.CTkEntry(
+            left_scroll,
+            placeholder_text="8080",
+            fg_color="#1a1b30",
+            border_color="#2c2e4a",
+            text_color="#ffffff",
+            corner_radius=8,
+            height=36,
+        )
+        port_entry.insert(0, "8080")
+        port_entry.pack(fill="x", padx=16, pady=(0, 10))
+
+        # Version
+        ctk.CTkLabel(left_scroll, text="VERSIÓN DE TERRARIA (Opcional, ej: 1.4.5.6)", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(anchor="w", padx=16, pady=(4, 2))
+        version_entry = ctk.CTkEntry(
+            left_scroll,
+            placeholder_text="1.4.4.9",
+            fg_color="#1a1b30",
+            border_color="#2c2e4a",
+            text_color="#ffffff",
+            corner_radius=8,
+            height=36,
+        )
+        version_entry.insert(0, "1.4.4.9")
+        version_entry.pack(fill="x", padx=16, pady=(0, 10))
+
+        # ── Slider helper ──
+        def make_resource_slider(parent, label_text, unit, min_val, max_val, default_val, step, color):
+            """Create a labeled slider with live value display."""
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            frame.pack(fill="x", padx=16, pady=(4, 8))
+
+            top_row = ctk.CTkFrame(frame, fg_color="transparent")
+            top_row.pack(fill="x")
+
+            ctk.CTkLabel(
+                top_row,
+                text=label_text,
+                font=("Arial", 10, "bold"),
+                text_color="#8c8da5",
+            ).pack(side="left")
+
+            val_label = ctk.CTkLabel(
+                top_row,
+                text=f"{default_val} {unit}",
+                font=("Arial", 10, "bold"),
+                text_color=color,
+            )
+            val_label.pack(side="right")
+
+            slider = ctk.CTkSlider(
+                frame,
+                from_=min_val,
+                to=max_val,
+                number_of_steps=max(1, int((max_val - min_val) / step)),
+                fg_color="#1a1b30",
+                progress_color=color,
+                button_color=color,
+                button_hover_color=color,
+                height=16,
+            )
+            slider.set(default_val)
+            slider.pack(fill="x", pady=(4, 0))
+
+            def on_change(value):
+                rounded = int(round(value / step) * step)
+                val_label.configure(text=f"{rounded} {unit}")
+
+            slider.configure(command=on_change)
+            return slider, val_label
+
+        # RAM slider
+        ram_max = min(sys_info["ram_total_mb"], 32768)
+        ram_default = min(512, ram_max)
+        ram_slider, ram_label = make_resource_slider(
+            left_scroll, "RAM", "MB", 128, ram_max, ram_default, 128, "#0fbcf9"
+        )
+
+        # CPU slider
+        cpu_max = sys_info["cpu_cores"]
+        cpu_slider, cpu_label = make_resource_slider(
+            left_scroll, "CPU CORES", "cores", 1, cpu_max, 1, 1, "#a55eea"
+        )
+
+        # Disk slider
+        disk_max = min(sys_info["disk_free_mb"], 102400)
+        disk_default = min(1024, disk_max)
+        disk_slider, disk_label = make_resource_slider(
+            left_scroll, "ALMACENAMIENTO", "MB", 256, disk_max, disk_default, 256, "#ff6b8b"
+        )
+
+        # Directory selector
+        ctk.CTkLabel(left_scroll, text="DIRECTORIO RAÍZ", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(anchor="w", padx=16, pady=(8, 2))
+
+        dir_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        dir_frame.pack(fill="x", padx=16, pady=(0, 10))
+
+        dir_var = tk.StringVar(value="(automático)")
+        dir_display = ctk.CTkLabel(
+            dir_frame,
+            textvariable=dir_var,
+            font=("Arial", 9),
+            text_color="#5a5c7a",
+            anchor="w",
+        )
+        dir_display.pack(side="left", fill="x", expand=True)
+
+        def choose_dir():
+            path = filedialog.askdirectory(title="Seleccionar directorio raíz", parent=self)
+            if path:
+                dir_var.set(path)
+
+        ctk.CTkButton(
+            dir_frame,
+            text="📂",
+            width=36,
+            height=28,
+            fg_color="#1a1b30",
+            hover_color="#2c2e4a",
+            corner_radius=6,
+            command=choose_dir,
+        ).pack(side="right", padx=(6, 0))
+
+        # System info display
+        sys_frame = ctk.CTkFrame(left_scroll, fg_color="#0a0b18", corner_radius=8)
+        sys_frame.pack(fill="x", padx=16, pady=(8, 10))
+
+        ctk.CTkLabel(
+            sys_frame,
+            text="RECURSOS DEL SISTEMA",
+            font=("Arial", 9, "bold"),
+            text_color="#5a5c7a",
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        sys_items = [
+            ("RAM Total", f"{sys_info['ram_total_mb']:,} MB", "#0fbcf9"),
+            ("CPU Cores", f"{sys_info['cpu_cores']}", "#a55eea"),
+            ("Disco Libre", f"{sys_info['disk_free_mb']:,} MB", "#ff6b8b"),
+        ]
+        for label_t, val_t, col in sys_items:
+            row = ctk.CTkFrame(sys_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=1)
+            ctk.CTkLabel(row, text=label_t, font=("Arial", 9), text_color="#5a5c7a").pack(side="left")
+            ctk.CTkLabel(row, text=val_t, font=("Arial", 9, "bold"), text_color=col).pack(side="right")
+
+        # Add bottom padding to sys_frame
+        ctk.CTkLabel(sys_frame, text="", height=4).pack()
+
+        # Error / status message
+        create_msg_label = ctk.CTkLabel(
+            left_scroll,
+            text="",
+            font=("Arial", 10),
+            text_color="#ff4757",
+            wraplength=280,
+        )
+        create_msg_label.pack(anchor="w", padx=16, pady=(0, 4))
+
+        # CREATE button
+        def do_create_server():
+            name = server_name_entry.get().strip()
+            port_str = port_entry.get().strip()
+
+            if not name:
+                create_msg_label.configure(text="⚠ Ingresa un nombre para el servidor.", text_color="#ff4757")
+                return
+            if not port_str.isdigit() or not (1024 <= int(port_str) <= 65535):
+                create_msg_label.configure(text="⚠ Puerto inválido (1024–65535).", text_color="#ff4757")
+                return
+
+            port = int(port_str)
+            ram = int(round(ram_slider.get() / 128) * 128)
+            cpu = int(round(cpu_slider.get()))
+            disk = int(round(disk_slider.get() / 256) * 256)
+            root_dir = dir_var.get() if dir_var.get() != "(automático)" else ""
+            version_str = version_entry.get().strip() or "1.4.4.9"
+
+            try:
+                mgr.create_server(
+                    name=name,
+                    port=port,
+                    ram_mb=ram,
+                    cpu_cores=cpu,
+                    disk_mb=disk,
+                    root_dir=root_dir,
+                    version=version_str,
+                )
+                create_msg_label.configure(text=f"✓ Servidor '{name}' creado.", text_color="#00e676")
+                server_name_entry.delete(0, "end")
+                # Reset version entry to default
+                version_entry.delete(0, "end")
+                version_entry.insert(0, "1.4.4.9")
+                # Auto-increment port
+                port_entry.delete(0, "end")
+                port_entry.insert(0, str(port + 1))
+                refresh_server_list()
+            except Exception as e:
+                err_msg = str(e)
+                if "UNIQUE" in err_msg.upper():
+                    create_msg_label.configure(text="⚠ Nombre o puerto ya en uso.", text_color="#ff4757")
+                else:
+                    create_msg_label.configure(text=f"⚠ Error: {err_msg}", text_color="#ff4757")
+
+        create_btn = ctk.CTkButton(
+            left_scroll,
+            text="⚡  CREAR SERVIDOR",
+            font=("Arial", 13, "bold"),
+            fg_color="#0fbcf9",
+            hover_color="#0da0d4",
+            text_color="#0d0e1a",
+            corner_radius=10,
+            height=44,
+            command=do_create_server,
+        )
+        create_btn.pack(fill="x", padx=16, pady=(4, 16))
+
+        bind_mouse_wheel_recursive(left_scroll, left_scroll)
+
+        # ── RIGHT PANEL: Server List ───────────────────────────────────
+        right_panel = ctk.CTkFrame(body, fg_color="#12132a", corner_radius=12)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        # Right panel header
+        right_header = ctk.CTkFrame(right_panel, fg_color="transparent")
+        right_header.pack(fill="x", padx=16, pady=(16, 8))
+
+        ctk.CTkLabel(
+            right_header,
+            text="SERVIDORES",
+            font=("Arial", 14, "bold"),
+            text_color="#ffffff",
+        ).pack(side="left")
+
+        refresh_btn = ctk.CTkButton(
+            right_header,
+            text="⟳",
+            width=32,
+            height=28,
+            fg_color="#1a1b30",
+            hover_color="#2c2e4a",
+            corner_radius=6,
+            font=("Arial", 14),
+            command=lambda: refresh_server_list(),
+        )
+        refresh_btn.pack(side="right")
+
+        # Scrollable server list
+        server_list_frame = ctk.CTkScrollableFrame(
+            right_panel,
+            fg_color="transparent",
+        )
+        server_list_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # ── Server card builder ──
+        def refresh_server_list():
+            self.resource_labels.clear()
+            for w in server_list_frame.winfo_children():
+                w.destroy()
+
+            servers = mgr.get_all_servers()
+            active = sum(1 for s in servers if s["estado"] == "encendido")
+            total_count_label.configure(text=f"{len(servers)} servidores")
+            active_count_label.configure(text=f"● {active} activos")
+
+            if not servers:
+                empty_frame = ctk.CTkFrame(server_list_frame, fg_color="#0a0b18", corner_radius=10)
+                empty_frame.pack(fill="x", padx=8, pady=40)
+                ctk.CTkLabel(
+                    empty_frame,
+                    text="No hay servidores creados",
+                    font=("Arial", 13),
+                    text_color="#5a5c7a",
+                ).pack(pady=30)
+                ctk.CTkLabel(
+                    empty_frame,
+                    text="Usa el panel izquierdo para crear uno",
+                    font=("Arial", 10),
+                    text_color="#3d3f5a",
+                ).pack(pady=(0, 30))
+                return
+
+            for srv in servers:
+                card = build_server_card(srv)
+                bind_mouse_wheel_recursive(card, server_list_frame)
+
+        def build_server_card(srv):
+            is_on = srv["estado"] == "encendido"
+
+            # Card
+            border_color = "#00e676" if is_on else "#2c2e4a"
+            card_bg = "#141530" if not is_on else "#0f1f15"
+            card = ctk.CTkFrame(
+                server_list_frame,
+                fg_color=card_bg,
+                corner_radius=10,
+                border_width=1,
+                border_color=border_color,
+            )
+            card.pack(fill="x", padx=8, pady=5)
+
+            # Top row: Name + Status indicator
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=14, pady=(12, 4))
+
+            # Status dot (canvas for pulsing effect)
+            dot_canvas = tk.Canvas(top_row, width=14, height=14, bg=card_bg, highlightthickness=0)
+            dot_canvas.pack(side="left", padx=(0, 8))
+            dot_color = "#00e676" if is_on else "#ff4757"
+            dot_canvas.create_oval(2, 2, 12, 12, fill=dot_color, outline="")
+
+            # Glow for active servers
+            if is_on:
+                dot_canvas.create_oval(0, 0, 14, 14, outline="#00e676", width=1)
+
+            ctk.CTkLabel(
+                top_row,
+                text=srv["nombre"].upper(),
+                font=("Arial", 13, "bold"),
+                text_color="#ffffff",
+            ).pack(side="left")
+
+            status_text = "ENCENDIDO" if is_on else "APAGADO"
+            status_color = "#00e676" if is_on else "#ff4757"
+            ctk.CTkLabel(
+                top_row,
+                text=status_text,
+                font=("Arial", 10, "bold"),
+                text_color=status_color,
+            ).pack(side="right")
+
+            # Info row: Port + IP
+            info_row = ctk.CTkFrame(card, fg_color="transparent")
+            info_row.pack(fill="x", padx=14, pady=(0, 4))
+
+            ctk.CTkLabel(
+                info_row,
+                text=f":{srv['puerto']}",
+                font=("Arial", 10),
+                text_color="#0fbcf9",
+            ).pack(side="left")
+
+            ctk.CTkLabel(
+                info_row,
+                text=f"  •  {srv['ip_bind']}",
+                font=("Arial", 10),
+                text_color="#5a5c7a",
+            ).pack(side="left")
+
+            if is_on and srv.get("pid"):
+                ctk.CTkLabel(
+                    info_row,
+                    text=f"  •  PID: {srv['pid']}",
+                    font=("Arial", 9),
+                    text_color="#3d3f5a",
+                ).pack(side="left")
+
+            is_terraria = "terraria" in srv["nombre"].lower()
+            if is_terraria:
+                version_val = "1.4.4.9"
+                try:
+                    version_val = srv["version"] or "1.4.4.9"
+                except Exception:
+                    pass
+                ctk.CTkLabel(
+                    info_row,
+                    text=f"  •  v{version_val}",
+                    font=("Arial", 10, "bold"),
+                    text_color="#00e676",
+                ).pack(side="left")
+
+            # Resource bars
+            res_frame = ctk.CTkFrame(card, fg_color="#0a0b18", corner_radius=6)
+            res_frame.pack(fill="x", padx=14, pady=(4, 6))
+
+            def mini_bar(parent, label, value, color):
+                r = ctk.CTkFrame(parent, fg_color="transparent")
+                r.pack(fill="x", padx=10, pady=2)
+                ctk.CTkLabel(r, text=label, font=("Arial", 9), text_color="#5a5c7a", width=90, anchor="w").pack(side="left")
+                ctk.CTkLabel(r, text=value, font=("Arial", 9, "bold"), text_color=color).pack(side="right")
+
+            mini_bar(res_frame, "RAM", f"{srv['ram_mb']} MB", "#0fbcf9")
+            mini_bar(res_frame, "CPU", f"{srv['cpu_cores']} cores", "#a55eea")
+            mini_bar(res_frame, "DISCO", f"{srv['disco_mb']} MB", "#ff6b8b")
+
+            # Add padding at bottom of resource frame
+            ctk.CTkLabel(res_frame, text="", height=2).pack()
+
+            # Real-time usage (only when running)
+            if is_on:
+                usage = mgr.get_server_resources(srv["id_servidor"])
+                if usage:
+                    usage_frame = ctk.CTkFrame(card, fg_color="transparent")
+                    usage_frame.pack(fill="x", padx=14, pady=(0, 4))
+
+                    ram_pct = min(100, int((usage["ram_used_mb"] / max(1, srv["ram_mb"])) * 100))
+                    ram_bar_color = "#00e676" if ram_pct < 70 else ("#ffab00" if ram_pct < 90 else "#ff4757")
+
+                    usage_lbl = ctk.CTkLabel(
+                        usage_frame,
+                        text=f"USO: RAM {usage['ram_used_mb']}MB/{srv['ram_mb']}MB ({ram_pct}%)  •  CPU {usage['cpu_percent']}%",
+                        font=("Arial", 9),
+                        text_color=ram_bar_color,
+                    )
+                    usage_lbl.pack(side="left")
+                    self.resource_labels[srv["id_servidor"]] = usage_lbl
+
+            # Action buttons
+            btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+            btn_frame.pack(fill="x", padx=14, pady=(4, 12))
+
+            if is_on:
+                ctk.CTkButton(
+                    btn_frame,
+                    text="⏹  APAGAR",
+                    font=("Arial", 10, "bold"),
+                    fg_color="#ff4757",
+                    hover_color="#cc3847",
+                    text_color="#ffffff",
+                    corner_radius=8,
+                    height=32,
+                    command=lambda sid=srv["id_servidor"]: _stop_server(sid),
+                ).pack(side="left", padx=(0, 6))
+
+                ctk.CTkButton(
+                    btn_frame,
+                    text="⚡ PROBAR",
+                    font=("Arial", 10, "bold"),
+                    fg_color="#0fbcf9",
+                    hover_color="#0da0d4",
+                    text_color="#0d0e1a",
+                    corner_radius=8,
+                    height=32,
+                    command=lambda sid=srv["id_servidor"], sname=srv["nombre"], sip=srv["ip_bind"], sport=srv["puerto"]: _test_server(sid, sname, sip, sport),
+                ).pack(side="left", padx=(0, 6))
+            else:
+                ctk.CTkButton(
+                    btn_frame,
+                    text="▶  ENCENDER",
+                    font=("Arial", 10, "bold"),
+                    fg_color="#00e676",
+                    hover_color="#00c864",
+                    text_color="#0d0e1a",
+                    corner_radius=8,
+                    height=32,
+                    command=lambda sid=srv["id_servidor"]: _start_server(sid),
+                ).pack(side="left", padx=(0, 6))
+
+            ctk.CTkButton(
+                btn_frame,
+                text="🗑",
+                font=("Arial", 12),
+                fg_color="#1a1b30",
+                hover_color="#8a2424",
+                text_color="#ff4757",
+                corner_radius=8,
+                width=36,
+                height=32,
+                command=lambda sid=srv["id_servidor"], sname=srv["nombre"]: _delete_server(sid, sname),
+            ).pack(side="right")
+
+            return card
+
+        # ── Server actions ──
+        def _test_server(server_id, server_name, server_ip, server_port):
+            modal = ctk.CTkToplevel(self)
+            modal.title(f"Prueba de Servidor - {server_name}")
+            modal.geometry("600x400")
+            modal.configure(fg_color="#0a0a1a")
+            modal.transient(self)
+            modal.grab_set()
+
+            title_lbl = ctk.CTkLabel(modal, text="TERMINAL DE DIAGNÓSTICO", font=("Courier New", 14, "bold"), text_color="#0fbcf9")
+            title_lbl.pack(pady=(20, 10))
+
+            console_frame = ctk.CTkFrame(modal, fg_color="#05050f", border_width=1, border_color="#1a1b30", corner_radius=5)
+            console_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+            console_text = tk.Text(console_frame, bg="#05050f", fg="#00e676", font=("Courier New", 12), bd=0, highlightthickness=0)
+            console_text.pack(fill="both", expand=True, padx=10, pady=10)
+            console_text.tag_config("error", foreground="#ff4757")
+            console_text.tag_config("highlight", foreground="#0fbcf9")
+            console_text.tag_config("cursor", foreground="#00e676")
+            console_text.configure(state="disabled")
+
+            cursor_state = [True]
+
+            def blink_cursor():
+                if not modal.winfo_exists():
+                    return
+                console_text.configure(state="normal")
+                pos = console_text.search("█", "1.0", "end")
+                if pos:
+                    console_text.delete(pos)
+                
+                if cursor_state[0]:
+                    console_text.insert("end", "█", "cursor")
+                
+                cursor_state[0] = not cursor_state[0]
+                console_text.configure(state="disabled")
+                modal.after(500, blink_cursor)
+
+            def append_text(text, tag=None):
+                if not modal.winfo_exists():
+                    return
+                console_text.configure(state="normal")
+                pos = console_text.search("█", "1.0", "end")
+                if pos:
+                    console_text.delete(pos)
+                
+                if tag:
+                    console_text.insert("end", text, tag)
+                else:
+                    console_text.insert("end", text)
+                
+                if cursor_state[0]:
+                    console_text.insert("end", "█", "cursor")
+                    
+                console_text.see("end")
+                console_text.configure(state="disabled")
+
+            blink_cursor()
+
+            import threading
+            import time
+
+            def type_effect(text, tag=None, delay=0.02):
+                for char in text:
+                    modal.after(0, append_text, char, tag)
+                    time.sleep(delay)
+                modal.after(0, append_text, "\n")
+
+            def perform_test():
+                time.sleep(0.5)
+                type_effect("> Inicializando protocolo de prueba...")
+                time.sleep(0.2)
+                type_effect(f"> Objetivo: {server_ip}:{server_port}")
+                time.sleep(0.2)
+                
+                type_string = "> probando la respuesta del servidor"
+                for char in type_string:
+                    modal.after(0, append_text, char)
+                    time.sleep(0.02)
+                
+                for _ in range(4):
+                    modal.after(0, append_text, ".")
+                    time.sleep(0.4)
+                modal.after(0, append_text, "\n\n")
+
+                import socket
+                host = "127.0.0.1" if server_ip in ["0.0.0.0", ""] else server_ip
+                
+                success = False
+                try:
+                    with socket.create_connection((host, server_port), timeout=3):
+                        success = True
+                except Exception:
+                    success = False
+
+                if success:
+                    type_effect("> El servidor esta en optimas condiciones:", "highlight")
+                    time.sleep(0.2)
+                    type_effect(f"> {server_name}: Hola mundo!")
+                else:
+                    type_effect("> el servidor no a respondido", "error")
+
+            threading.Thread(target=perform_test, daemon=True).start()
+
+        def _start_server(server_id):
+            success = mgr.start_server(server_id)
+            if success:
+                refresh_server_list()
+            else:
+                messagebox.showerror("Error", "No se pudo iniciar el servidor.", parent=self)
+
+        def _stop_server(server_id):
+            mgr.stop_server(server_id)
+            refresh_server_list()
+
+        def _delete_server(server_id, server_name):
+            if not messagebox.askyesno(
+                "Eliminar servidor",
+                f"¿Eliminar el servidor '{server_name}'?\nEsto lo detendrá si está encendido.",
+                parent=self,
+            ):
+                return
+            mgr.delete_server(server_id)
+            refresh_server_list()
+
+        # ── Auto-refresh loop ──
+        def auto_refresh():
+            if self.tabview.active_tab != "Servidor":
+                try:
+                    if self.winfo_exists():
+                        self.after(5000, auto_refresh)
+                except Exception:
+                    pass
+                return
+            try:
+                if self.winfo_exists():
+                    servers = mgr.get_all_servers()
+                    current_snapshot = [(s["id_servidor"], s["estado"], s["pid"]) for s in servers]
+                    
+                    if not hasattr(self, "_last_servers_snapshot") or self._last_servers_snapshot != current_snapshot:
+                        self._last_servers_snapshot = current_snapshot
+                        refresh_server_list()
+                    else:
+                        for srv in servers:
+                            if srv["estado"] == "encendido":
+                                sid = srv["id_servidor"]
+                                usage = mgr.get_server_resources(sid)
+                                if usage and sid in self.resource_labels and self.resource_labels[sid].winfo_exists():
+                                    ram_pct = min(100, int((usage["ram_used_mb"] / max(1, srv["ram_mb"])) * 100))
+                                    ram_bar_color = "#00e676" if ram_pct < 70 else ("#ffab00" if ram_pct < 90 else "#ff4757")
+                                    self.resource_labels[sid].configure(
+                                        text=f"USO: RAM {usage['ram_used_mb']}MB/{srv['ram_mb']}MB ({ram_pct}%)  •  CPU {usage['cpu_percent']}%",
+                                        text_color=ram_bar_color
+                                    )
+                    self.after(5000, auto_refresh)
+            except Exception:
+                pass
+
+        # Initial load
+        refresh_server_list()
+
+        # Start auto-refresh (every 5 seconds)
+        self.after(5000, auto_refresh)
+
+
+    # ===========================================================================
+    # ALOJAMIENTO MODAL
+    # ===========================================================================
+
+    def _build_alojamiento_tab(self):
+        tab = self.tabview.tab("Alojamiento")
+        tab.configure(fg_color="#0d0e1a")
+
+        header = ctk.CTkFrame(tab, fg_color="#12132a", corner_radius=12, height=70)
+        header.pack(fill="x", padx=16, pady=(16, 8))
+        header.pack_propagate(False)
+
+        ctk.CTkLabel(
+            header,
+            text="🎮 ALOJAMIENTO",
+            font=("Arial", 20, "bold"),
+            text_color="#0fbcf9",
+        ).pack(side="left", padx=16, pady=14)
+        
+        ctk.CTkLabel(
+            header,
+            text="  —  Servidores de Juegos y Programas",
+            font=("Arial", 12),
+            text_color="#5a5c7a",
+        ).pack(side="left", pady=14)
+
+        self.alojamiento_body = ctk.CTkFrame(tab, fg_color="transparent")
+        self.alojamiento_body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+        # Main Selection View
+        self.alojamiento_selection_view = ctk.CTkFrame(self.alojamiento_body, fg_color="transparent")
+        self.alojamiento_selection_view.pack(fill="both", expand=True)
+
+        self.alojamiento_selection_view.grid_columnconfigure(0, weight=1)
+        self.alojamiento_selection_view.grid_columnconfigure(1, weight=1)
+        self.alojamiento_selection_view.grid_rowconfigure(0, weight=1)
+
+        # Games Server Card
+        games_card = ctk.CTkFrame(self.alojamiento_selection_view, fg_color="#12132a", corner_radius=12, cursor="hand2")
+        games_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=20)
+        games_card.bind("<Button-1>", lambda e: self._show_terraria_wizard())
+        
+        ctk.CTkLabel(games_card, text="🎮", font=("Arial", 60)).pack(pady=(60, 20))
+        ctk.CTkLabel(games_card, text="SERVER DE JUEGOS", font=("Arial", 18, "bold"), text_color="#ffffff").pack(pady=10)
+        ctk.CTkLabel(games_card, text="Alojamiento para juegos multijugador", font=("Arial", 12), text_color="#8c8da5").pack(pady=10)
+
+        for child in games_card.winfo_children():
+            child.bind("<Button-1>", lambda e: self._show_terraria_wizard())
+
+        # Programs Server Card
+        programs_card = ctk.CTkFrame(self.alojamiento_selection_view, fg_color="#12132a", corner_radius=12, cursor="hand2")
+        programs_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=20)
+        
+        ctk.CTkLabel(programs_card, text="💻", font=("Arial", 60)).pack(pady=(60, 20))
+        ctk.CTkLabel(programs_card, text="SERVER PROGRAMS", font=("Arial", 18, "bold"), text_color="#ffffff").pack(pady=10)
+        ctk.CTkLabel(programs_card, text="Alojamiento para utilidades y web", font=("Arial", 12), text_color="#8c8da5").pack(pady=10)
+
+        # Terraria Wizard View
+        self.terraria_wizard_view = ctk.CTkFrame(self.alojamiento_body, fg_color="transparent")
+        
+        wizard_container = ctk.CTkFrame(self.terraria_wizard_view, fg_color="#12132a", corner_radius=12)
+        wizard_container.pack(fill="both", expand=True, pady=20)
+
+        ctk.CTkLabel(wizard_container, text="SERVER DE TERRARIA", font=("Arial", 20, "bold"), text_color="#00e676").pack(pady=(40, 10))
+        ctk.CTkLabel(wizard_container, text="Seleccione el servidor activo para transmutar:", font=("Arial", 14), text_color="#ffffff").pack(pady=20)
+
+        from ..utils.server_manager import ServerManager
+        self.alojamiento_server_var = ctk.StringVar(value="")
+        
+        menu_frame = ctk.CTkFrame(wizard_container, fg_color="transparent")
+        menu_frame.pack(pady=20)
+        
+        self.alojamiento_server_menu = ctk.CTkOptionMenu(
+            menu_frame, 
+            variable=self.alojamiento_server_var,
+            values=["Cargando..."],
+            fg_color="#1a1b30",
+            button_color="#2c2e4a",
+            width=250
+        )
+        self.alojamiento_server_menu.pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            menu_frame, text="⟳", width=36, height=28, fg_color="#1a1b30", hover_color="#2c2e4a",
+            command=self._refresh_terraria_wizard_servers
+        ).pack(side="left")
+
+        btns_frame = ctk.CTkFrame(wizard_container, fg_color="transparent")
+        btns_frame.pack(pady=40)
+
+        ctk.CTkButton(
+            btns_frame, text="Volver", command=self._show_alojamiento_selection,
+            fg_color="#1a1b30", hover_color="#2c2e4a", width=120
+        ).pack(side="left", padx=10)
+        
+        ctk.CTkButton(
+            btns_frame, text="Siguiente", command=self._show_terraria_panel,
+            fg_color="#00e676", hover_color="#00c864", text_color="#0d0e1a", width=120
+        ).pack(side="left", padx=10)
+
+        # Terraria Control Panel View
+        self.terraria_panel_view = ctk.CTkFrame(self.alojamiento_body, fg_color="transparent")
+        
+        panel_top = ctk.CTkFrame(self.terraria_panel_view, fg_color="transparent")
+        panel_top.pack(fill="x", pady=(0, 16))
+        
+        ctk.CTkButton(panel_top, text="← Volver", command=self._show_terraria_wizard, width=80, fg_color="#1a1b30", hover_color="#2c2e4a").pack(side="left")
+        self.terraria_panel_title = ctk.CTkLabel(panel_top, text="Panel de Control - Terraria", font=("Arial", 16, "bold"), text_color="#00e676")
+        self.terraria_panel_title.pack(side="left", padx=20)
+
+        panel_content = ctk.CTkFrame(self.terraria_panel_view, fg_color="transparent")
+        panel_content.pack(fill="both", expand=True)
+        panel_content.grid_columnconfigure(0, weight=1)
+        panel_content.grid_columnconfigure(1, weight=1)
+        panel_content.grid_rowconfigure(0, weight=1)
+
+        # Left Column - Controls & Graph
+        self.panel_left = ctk.CTkScrollableFrame(panel_content, fg_color="transparent")
+        self.panel_left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        
+        # Graph Card
+        graph_card = ctk.CTkFrame(self.panel_left, fg_color="#12132a", corner_radius=12, height=200)
+        graph_card.pack(fill="x", pady=(0, 16))
+        graph_card.pack_propagate(False)
+        ctk.CTkLabel(graph_card, text="JUGADORES EN LÍNEA", font=("Arial", 11, "bold"), text_color="#ffffff", anchor="w").pack(fill="x", padx=15, pady=(12, 5))
+        self.terraria_graph_canvas = __import__("tkinter").Canvas(graph_card, bg="#12132a", highlightthickness=0)
+        self.terraria_graph_canvas.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.terraria_graph_canvas.bind("<Configure>", lambda e: self._refresh_terraria_graph())
+
+        # Config Card
+        config_card = ctk.CTkFrame(self.panel_left, fg_color="#12132a", corner_radius=12)
+        config_card.pack(fill="x", pady=(0, 16))
+        
+        ctk.CTkLabel(config_card, text="CONFIGURACIÓN", font=("Arial", 11, "bold"), text_color="#ffffff", anchor="w").pack(fill="x", padx=15, pady=(12, 5))
+        
+        conf_row = ctk.CTkFrame(config_card, fg_color="transparent")
+        conf_row.pack(fill="x", padx=15, pady=(5, 15))
+        ctk.CTkLabel(conf_row, text="Jugadores Máximos:", text_color="#8c8da5").pack(side="left")
+        self.terraria_max_players = ctk.CTkEntry(conf_row, width=60, justify="center")
+        self.terraria_max_players.insert(0, "8")
+        self.terraria_max_players.pack(side="right")
+
+        # Tunnel Card
+        tunnel_card = ctk.CTkFrame(self.panel_left, fg_color="#12132a", corner_radius=12)
+        tunnel_card.pack(fill="x")
+        
+        ctk.CTkLabel(tunnel_card, text="TRANSMUTACIÓN (TUNNEL)", font=("Arial", 11, "bold"), text_color="#ffffff", anchor="w").pack(fill="x", padx=15, pady=(12, 5))
+        
+        self.tunnel_status_label = ctk.CTkLabel(tunnel_card, text="ESTADO: DESACTIVADO", text_color="#ff4757", font=("Arial", 12, "bold"))
+        self.tunnel_status_label.pack(pady=5)
+        
+        self.tunnel_inst_label = ctk.CTkLabel(tunnel_card, text="", text_color="#8c8da5", font=("Arial", 11))
+        self.tunnel_inst_label.pack()
+        
+        # IP Frame (IP + copy button)
+        self.tunnel_ip_frame = ctk.CTkFrame(tunnel_card, fg_color="transparent")
+        self.tunnel_ip_val_lbl = ctk.CTkLabel(self.tunnel_ip_frame, text="", text_color="#0fbcf9", font=("Arial", 12, "bold"))
+        self.tunnel_ip_val_lbl.pack(side="left", padx=(0, 10))
+        self.tunnel_ip_copy_btn = ctk.CTkButton(
+            self.tunnel_ip_frame, text="Copiar IP", width=65, height=24, font=("Arial", 10, "bold"), 
+            fg_color="#1a1b30", hover_color="#2c2e4a", border_width=1, border_color="#2c2e4a",
+            command=self._copy_ip
+        )
+        self.tunnel_ip_copy_btn.pack(side="left")
+        
+        # Port Frame (Port + copy button)
+        self.tunnel_port_frame = ctk.CTkFrame(tunnel_card, fg_color="transparent")
+        self.tunnel_port_val_lbl = ctk.CTkLabel(self.tunnel_port_frame, text="", text_color="#00e676", font=("Arial", 12, "bold"))
+        self.tunnel_port_val_lbl.pack(side="left", padx=(0, 10))
+        self.tunnel_port_copy_btn = ctk.CTkButton(
+            self.tunnel_port_frame, text="Copiar Puerto", width=85, height=24, font=("Arial", 10, "bold"), 
+            fg_color="#1a1b30", hover_color="#2c2e4a", border_width=1, border_color="#2c2e4a",
+            command=self._copy_port
+        )
+        self.tunnel_port_copy_btn.pack(side="left")
+
+        # Public IP Section (Domain + entry + copy button)
+        self.tunnel_pub_title_lbl = ctk.CTkLabel(tunnel_card, text="🌐 CONEXIÓN INTERNET (Externa):", font=("Arial", 11, "bold"), text_color="#ffea00")
+        
+        self.tunnel_pub_ip_frame = ctk.CTkFrame(tunnel_card, fg_color="transparent")
+        self.tunnel_pub_ip_lbl = ctk.CTkLabel(self.tunnel_pub_ip_frame, text="IP/Dominio:", text_color="#8c8da5", font=("Arial", 11))
+        self.tunnel_pub_ip_lbl.pack(side="left", padx=5)
+        self.tunnel_pub_ip_entry = ctk.CTkEntry(self.tunnel_pub_ip_frame, width=180, height=24, font=("Arial", 11))
+        self.tunnel_pub_ip_entry.pack(side="left", padx=5)
+        self.tunnel_pub_ip_copy_btn = ctk.CTkButton(
+            self.tunnel_pub_ip_frame, text="Copiar", width=55, height=24, font=("Arial", 10, "bold"),
+            fg_color="#1a1b30", hover_color="#2c2e4a", border_width=1, border_color="#2c2e4a",
+            command=self._copy_pub_ip
+        )
+        self.tunnel_pub_ip_copy_btn.pack(side="left", padx=5)
+        
+        # Public Port Section (Port + entry + copy button)
+        self.tunnel_pub_port_frame = ctk.CTkFrame(tunnel_card, fg_color="transparent")
+        self.tunnel_pub_port_lbl = ctk.CTkLabel(self.tunnel_pub_port_frame, text="Puerto:", text_color="#8c8da5", font=("Arial", 11))
+        self.tunnel_pub_port_lbl.pack(side="left", padx=5)
+        self.tunnel_pub_port_entry = ctk.CTkEntry(self.tunnel_pub_port_frame, width=70, height=24, font=("Arial", 11))
+        self.tunnel_pub_port_entry.pack(side="left", padx=5)
+        self.tunnel_pub_port_copy_btn = ctk.CTkButton(
+            self.tunnel_pub_port_frame, text="Copiar", width=55, height=24, font=("Arial", 10, "bold"),
+            fg_color="#1a1b30", hover_color="#2c2e4a", border_width=1, border_color="#2c2e4a",
+            command=self._copy_pub_port
+        )
+        self.tunnel_pub_port_copy_btn.pack(side="left", padx=5)
+        
+        self.tunnel_pub_ip_entry.bind("<KeyRelease>", self._save_tunnel_settings)
+        self.tunnel_pub_port_entry.bind("<KeyRelease>", self._save_tunnel_settings)
+
+        # Playit.gg info label
+        self.tunnel_playit_info_lbl = ctk.CTkLabel(tunnel_card, text="", text_color="#8c8da5", font=("Arial", 11), justify="center")
+
+        tunnel_btns = ctk.CTkFrame(tunnel_card, fg_color="transparent")
+        tunnel_btns.pack(pady=15)
+        
+        self.btn_act_tunnel = ctk.CTkButton(tunnel_btns, text="Activar Túnel", fg_color="#0fbcf9", hover_color="#0da0d4", text_color="#0d0e1a", command=self._activate_tunnel)
+        self.btn_act_tunnel.pack(side="left", padx=5)
+        self.btn_desact_tunnel = ctk.CTkButton(tunnel_btns, text="Desactivar", fg_color="#ff4757", hover_color="#cc3847", command=self._deactivate_tunnel, state="disabled")
+        self.btn_desact_tunnel.pack(side="left", padx=5)
+
+        # Right Column - Active Players & Bans
+        panel_right = ctk.CTkFrame(panel_content, fg_color="#12132a", corner_radius=12)
+        panel_right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        
+        # JUGADORES ACTIVOS
+        ctk.CTkLabel(panel_right, text="JUGADORES ACTIVOS", font=("Arial", 11, "bold"), text_color="#00e676", anchor="w").pack(fill="x", padx=15, pady=(12, 5))
+        self.active_players_frame = ctk.CTkScrollableFrame(panel_right, fg_color="transparent", height=150)
+        self.active_players_frame.pack(fill="both", expand=True, padx=15, pady=(5, 10))
+        
+        # Separator line
+        separator = ctk.CTkFrame(panel_right, height=2, fg_color="#1a1b30")
+        separator.pack(fill="x", padx=15, pady=5)
+        
+        # LISTA DE BANEOS
+        ctk.CTkLabel(panel_right, text="LISTA DE BANEOS", font=("Arial", 11, "bold"), text_color="#ffffff", anchor="w").pack(fill="x", padx=15, pady=(10, 5))
+        
+        ban_input_frame = ctk.CTkFrame(panel_right, fg_color="transparent")
+        ban_input_frame.pack(fill="x", padx=15, pady=5)
+        self.ban_entry = ctk.CTkEntry(ban_input_frame, placeholder_text="Nombre / IP")
+        self.ban_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ctk.CTkButton(ban_input_frame, text="Banear", width=80, fg_color="#ff4757", hover_color="#cc3847", command=self._add_ban).pack(side="right")
+
+        self.bans_list_frame = ctk.CTkScrollableFrame(panel_right, fg_color="transparent", height=150)
+        self.bans_list_frame.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        self.banned_list = []
+
+        self._refresh_bans()
+
+        bind_mouse_wheel_recursive(self.panel_left, self.panel_left)
+        bind_mouse_wheel_recursive(self.active_players_frame, self.active_players_frame)
+        bind_mouse_wheel_recursive(self.bans_list_frame, self.bans_list_frame)
+
+    def _show_alojamiento_selection(self):
+        self.terraria_wizard_view.pack_forget()
+        self.terraria_panel_view.pack_forget()
+        self.alojamiento_selection_view.pack(fill="both", expand=True)
+
+    def _show_terraria_wizard(self):
+        self.alojamiento_selection_view.pack_forget()
+        self.terraria_panel_view.pack_forget()
+        self.terraria_wizard_view.pack(fill="both", expand=True)
+        self._refresh_terraria_wizard_servers()
+
+    def _refresh_terraria_wizard_servers(self):
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        servers = mgr.get_all_servers()
+        active_servers = [s['nombre'] for s in servers if s['estado'] == 'encendido']
+        
+        if active_servers:
+            self.alojamiento_server_menu.configure(values=active_servers)
+            if self.alojamiento_server_var.get() not in active_servers:
+                self.alojamiento_server_menu.set(active_servers[0])
+        else:
+            self.alojamiento_server_menu.configure(values=["No hay servidores activos"])
+            self.alojamiento_server_menu.set("No hay servidores activos")
+
+    def _show_terraria_panel(self):
+        selected = self.alojamiento_server_var.get()
+        if not selected or selected == "No hay servidores activos" or selected == "Cargando...":
+            __import__("tkinter").messagebox.showerror("Error", "Seleccione un servidor activo primero.")
+            return
+
+        self.terraria_panel_title.configure(text=f"Panel de Control - {selected} (Terraria)")
+        self.terraria_wizard_view.pack_forget()
+        self.alojamiento_selection_view.pack_forget()
+        self.terraria_panel_view.pack(fill="both", expand=True)
+        self._refresh_terraria_graph()
+
+    def _refresh_terraria_graph(self, update_data=False):
+        if not hasattr(self, "terraria_graph_canvas") or not self.terraria_graph_canvas.winfo_exists():
+            return
+        
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        
+        active_players = []
+        if srv:
+            active_players = mgr.get_active_players(srv['id_servidor'])
+            # Sincronizar lista de baneos desde ServerManager
+            srv_bans = mgr.get_bans(srv['id_servidor'])
+            for ban_target in srv_bans:
+                if ban_target not in self.banned_list:
+                    self.banned_list.append(ban_target)
+            self._refresh_bans()
+            
+        real_count = len(active_players)
+
+        if not hasattr(self, "terraria_players_history"):
+            self.terraria_players_history = [real_count] * 7
+            self.after(3000, self._terraria_graph_timer)
+            
+        if update_data:
+            self.terraria_players_history.append(real_count)
+            if len(self.terraria_players_history) > 7:
+                self.terraria_players_history.pop(0)
+        
+        # Always refresh active players list UI
+        self._refresh_active_players_list(active_players)
+        
+        c = self.terraria_graph_canvas
+        c.delete("all")
+        w = c.winfo_width()
+        h = c.winfo_height()
+        if w < 10 or h < 10: return
+
+        # Draw grid
+        max_p_str = self.terraria_max_players.get()
+        max_val = int(max_p_str) if max_p_str.isdigit() and int(max_p_str) > 0 else 10
+        if max_val < max(self.terraria_players_history):
+            max_val = max(self.terraria_players_history) + 2
+
+        chart_top = 20
+        chart_bottom = h - 20
+        chart_left = 30
+        chart_right = w - 10
+        chart_height = chart_bottom - chart_top
+        chart_width = chart_right - chart_left
+
+        for i in range(5):
+            val = (max_val / 4) * i
+            y = chart_bottom - (val / max_val) * chart_height
+            c.create_line(chart_left, y, chart_right, y, fill="#2c2e4a", dash=(4, 4))
+            c.create_text(chart_left - 10, y, text=str(int(val)), fill="#8c8da5", font=("Arial", 8), anchor="e")
+
+        # Dynamic data for players
+        pts = list(enumerate(self.terraria_players_history))
+        
+        coords = []
+        for px, py in pts:
+            cx = chart_left + (px * (chart_width / 6))
+            cy = chart_bottom - (py / max_val) * chart_height
+            coords.extend([cx, cy])
+            c.create_oval(cx-3, cy-3, cx+3, cy+3, fill="#00e676", outline="")
+
+        if len(coords) >= 4:
+            c.create_line(coords, fill="#00e676", width=2, smooth=True, splinesteps=36)
+
+        c.create_text(w/2, chart_bottom+10, text="Tiempo", fill="#8c8da5", font=("Arial", 8))
+
+    def _terraria_graph_timer(self):
+        if hasattr(self, "terraria_graph_canvas") and self.terraria_graph_canvas.winfo_exists():
+            self._refresh_terraria_graph(update_data=True)
+            self.after(3000, self._terraria_graph_timer)
+
+    def _refresh_active_players_list(self, active_players):
+        if not hasattr(self, "active_players_frame") or not self.active_players_frame.winfo_exists():
+            return
+
+        for w in self.active_players_frame.winfo_children():
+            w.destroy()
+
+        if not active_players:
+            ctk.CTkLabel(self.active_players_frame, text="No hay jugadores activos", text_color="#5a5c7a").pack(pady=20)
+            return
+
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        
+        creator = ""
+        if srv:
+            creator = mgr.get_creator(srv['id_servidor'])
+
+        for player in active_players:
+            f = ctk.CTkFrame(self.active_players_frame, fg_color="#1a1b30")
+            f.pack(fill="x", pady=2)
+
+            dot_canvas = tk.Canvas(f, width=10, height=10, bg="#1a1b30", highlightthickness=0)
+            dot_canvas.pack(side="left", padx=(10, 5), pady=8)
+            dot_canvas.create_oval(1, 1, 9, 9, fill="#00e676", outline="")
+
+            is_creator = (player == creator)
+            display_name = f"👑 {player}" if is_creator else player
+
+            ctk.CTkLabel(f, text=display_name, text_color="#ffffff", font=("Arial", 12, "bold")).pack(side="left", padx=5, pady=5)
+
+            ctk.CTkButton(
+                f,
+                text="Expulsar",
+                font=("Arial", 10, "bold"),
+                fg_color="#ff4757",
+                hover_color="#cc3847",
+                text_color="#ffffff",
+                corner_radius=6,
+                width=65,
+                height=22,
+                command=lambda p=player: self._kick_player(p),
+            ).pack(side="right", padx=5, pady=5)
+
+            ctk.CTkButton(
+                f,
+                text="Creador",
+                font=("Arial", 10, "bold"),
+                fg_color="#ffea00" if is_creator else "#ffb300",
+                hover_color="#ff8f00",
+                text_color="#000000",
+                corner_radius=6,
+                width=65,
+                height=22,
+                command=lambda p=player: self._set_creator(p),
+            ).pack(side="right", padx=5, pady=5)
+
+    def _set_creator(self, player_name):
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        if srv:
+            current_creator = mgr.get_creator(srv['id_servidor'])
+            if current_creator == player_name:
+                mgr.set_creator(srv['id_servidor'], "")
+            else:
+                mgr.set_creator(srv['id_servidor'], player_name)
+            self._refresh_active_players_list(mgr.get_active_players(srv['id_servidor']))
+
+    def _kick_player(self, player_name):
+        if not messagebox.askyesno(
+            "Expulsar jugador",
+            f"¿Estás seguro de que deseas expulsar a '{player_name}' del servidor?",
+            parent=self
+        ):
+            return
+
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        if srv:
+            mgr.send_server_command(srv['id_servidor'], f"kick {player_name}")
+            self.after(500, lambda: self._refresh_terraria_graph(update_data=False))
+
+    def _add_ban(self):
+        b_target = self.ban_entry.get().strip()
+        if b_target:
+            self.banned_list.append(b_target)
+            self.ban_entry.delete(0, 'end')
+            self._refresh_bans()
+
+            from ..utils.server_manager import ServerManager
+            mgr = ServerManager()
+            selected = self.alojamiento_server_var.get()
+            servers = mgr.get_all_servers()
+            srv = next((s for s in servers if s['nombre'] == selected), None)
+            if srv:
+                mgr.send_server_command(srv['id_servidor'], f"ban {b_target}")
+                mgr.add_ban(srv['id_servidor'], b_target)
+
+    def _remove_ban(self, b_target):
+        if b_target in self.banned_list:
+            self.banned_list.remove(b_target)
+            
+            from ..utils.server_manager import ServerManager
+            mgr = ServerManager()
+            selected = self.alojamiento_server_var.get()
+            servers = mgr.get_all_servers()
+            srv = next((s for s in servers if s['nombre'] == selected), None)
+            if srv:
+                mgr.send_server_command(srv['id_servidor'], f"unban {b_target}")
+                # Also remove from ServerManager's list if present
+                with mgr._lock:
+                    if srv['id_servidor'] in mgr._banned_players and b_target in mgr._banned_players[srv['id_servidor']]:
+                        mgr._banned_players[srv['id_servidor']].remove(b_target)
+            
+            self._refresh_bans()
+
+    def _refresh_bans(self):
+        for w in self.bans_list_frame.winfo_children():
+            w.destroy()
+        
+        if not self.banned_list:
+            ctk.CTkLabel(self.bans_list_frame, text="No hay baneos", text_color="#5a5c7a").pack(pady=20)
+            return
+            
+        for b in self.banned_list:
+            f = ctk.CTkFrame(self.bans_list_frame, fg_color="#1a1b30")
+            f.pack(fill="x", pady=2)
+            ctk.CTkLabel(f, text=b, text_color="#ffffff").pack(side="left", padx=10, pady=5)
+            ctk.CTkButton(f, text="X", width=30, fg_color="#ff4757", hover_color="#cc3847", command=lambda x=b: self._remove_ban(x)).pack(side="right", padx=5, pady=5)
+
+    def _copy_ip(self):
+        val = self.tunnel_ip_val_lbl.cget("text")
+        if ":" in val:
+            ip_val = val.split(":", 1)[1].strip()
+            self.clipboard_clear()
+            self.clipboard_append(ip_val)
+            self.update()
+            self.tunnel_ip_copy_btn.configure(text="¡Copiado!", fg_color="#00e676", text_color="#0d0e1a")
+            self.after(2000, lambda: self.tunnel_ip_copy_btn.configure(text="Copiar IP", fg_color="#1a1b30", text_color="#ffffff"))
+
+    def _copy_port(self):
+        val = self.tunnel_port_val_lbl.cget("text")
+        if ":" in val:
+            port_val = val.split(":", 1)[1].strip()
+            self.clipboard_clear()
+            self.clipboard_append(port_val)
+            self.update()
+            self.tunnel_port_copy_btn.configure(text="¡Copiado!", fg_color="#00e676", text_color="#0d0e1a")
+            self.after(2000, lambda: self.tunnel_port_copy_btn.configure(text="Copiar Puerto", fg_color="#1a1b30", text_color="#ffffff"))
+
+    def _activate_tunnel(self):
+        self.btn_act_tunnel.configure(state="disabled")
+        self.tunnel_status_label.configure(text="Iniciando transmutación...", text_color="#ffab00")
+        
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        port = srv['puerto'] if srv else 8080
+        
+        # Determine initial public IP/port values
+        db_tunnel_ip = srv.get('tunnel_ip') if srv else None
+        db_tunnel_port = srv.get('tunnel_port') if srv else None
+        
+        # Check if playit service is active
+        playit_active = False
+        try:
+            import subprocess
+            res = subprocess.run(["playit", "status"], capture_output=True, text=True, timeout=2)
+            if "Phase: running" in res.stdout:
+                playit_active = True
+        except Exception:
+            pass
+
+        # Start simulated/placeholder tunnel process via manager
+        url = mgr.start_tunnel(port)
+        
+        # Get actual LAN IP
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            local_ip = "127.0.0.1"
+
+        if url:
+            # Set up initial public IP/port if not configured in DB
+            import random
+            if not db_tunnel_ip or db_tunnel_ip == 'communications-sn.gl.at.ply.gg':
+                if ":" in url:
+                    initial_pub_ip, initial_pub_port = url.split(":", 1)
+                else:
+                    initial_pub_ip = url or 'communications-sn.gl.at.ply.gg'
+                    initial_pub_port = str(random.randint(10000, 65535))
+            else:
+                initial_pub_ip = db_tunnel_ip
+                initial_pub_port = str(db_tunnel_port) if db_tunnel_port else str(random.randint(10000, 65535))
+
+            self.tunnel_status_label.configure(text="ESTADO: OPERATIVO", text_color="#00e676")
+            
+            # Local connection UI
+            self.tunnel_inst_label.configure(text="⚡ CONEXIÓN LOCAL (Wi-Fi):")
+            self.tunnel_ip_val_lbl.configure(text=f"IP Local: {local_ip}")
+            self.tunnel_port_val_lbl.configure(text=f"Puerto: {port}")
+            self.tunnel_ip_frame.pack(pady=4)
+            self.tunnel_port_frame.pack(pady=4)
+            
+            # Public connection UI
+            self.tunnel_pub_title_lbl.pack(pady=(12, 4))
+            self.tunnel_pub_ip_entry.delete(0, 'end')
+            self.tunnel_pub_ip_entry.insert(0, initial_pub_ip)
+            self.tunnel_pub_port_entry.delete(0, 'end')
+            self.tunnel_pub_port_entry.insert(0, initial_pub_port)
+            self.tunnel_pub_ip_frame.pack(pady=4)
+            self.tunnel_pub_port_frame.pack(pady=4)
+            
+            # Show playit.gg information
+            playit_status_text = "Playit.gg está ACTIVO en tu PC." if playit_active else "Playit.gg no está activo como servicio de Windows."
+            self.tunnel_playit_info_lbl.configure(
+                text=f"🌐 {playit_status_text}\nConfigura un túnel para el puerto {port} en tu panel de playit.gg\npara permitir conexiones externas desde Internet."
+            )
+            self.tunnel_playit_info_lbl.pack(pady=(10, 5))
+            
+            self.btn_desact_tunnel.configure(state="normal")
+            
+            # Update mouse wheel bindings on new packed widgets
+            bind_mouse_wheel_recursive(self.tunnel_ip_frame, self.panel_left)
+            bind_mouse_wheel_recursive(self.tunnel_port_frame, self.panel_left)
+            bind_mouse_wheel_recursive(self.tunnel_pub_ip_frame, self.panel_left)
+            bind_mouse_wheel_recursive(self.tunnel_pub_port_frame, self.panel_left)
+            bind_mouse_wheel_recursive(self.tunnel_playit_info_lbl, self.panel_left)
+        else:
+            self.tunnel_status_label.configure(text="Error al iniciar túnel", text_color="#ff4757")
+            self.tunnel_inst_label.configure(text="")
+            self.tunnel_ip_val_lbl.configure(text="")
+            self.tunnel_port_val_lbl.configure(text="")
+            self.tunnel_ip_frame.pack_forget()
+            self.tunnel_port_frame.pack_forget()
+            self.tunnel_pub_title_lbl.pack_forget()
+            self.tunnel_pub_ip_frame.pack_forget()
+            self.tunnel_pub_port_frame.pack_forget()
+            self.tunnel_playit_info_lbl.pack_forget()
+            self.btn_act_tunnel.configure(state="normal")
+
+    def _deactivate_tunnel(self):
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        mgr.stop_tunnel()
+        
+        self.tunnel_status_label.configure(text="ESTADO: DESACTIVADO", text_color="#ff4757")
+        self.tunnel_inst_label.configure(text="")
+        self.tunnel_ip_val_lbl.configure(text="")
+        self.tunnel_port_val_lbl.configure(text="")
+        self.tunnel_ip_frame.pack_forget()
+        self.tunnel_port_frame.pack_forget()
+        self.tunnel_pub_title_lbl.pack_forget()
+        self.tunnel_pub_ip_frame.pack_forget()
+        self.tunnel_pub_port_frame.pack_forget()
+        self.tunnel_playit_info_lbl.pack_forget()
+        
+        self.btn_act_tunnel.configure(state="normal")
+        self.btn_desact_tunnel.configure(state="disabled")
+
+    def _copy_pub_ip(self):
+        val = self.tunnel_pub_ip_entry.get().strip()
+        if val:
+            self.clipboard_clear()
+            self.clipboard_append(val)
+            self.update()
+            self.tunnel_pub_ip_copy_btn.configure(text="¡Copiado!", fg_color="#00e676", text_color="#0d0e1a")
+            self.after(2000, lambda: self.tunnel_pub_ip_copy_btn.configure(text="Copiar", fg_color="#1a1b30", text_color="#ffffff"))
+
+    def _copy_pub_port(self):
+        val = self.tunnel_pub_port_entry.get().strip()
+        if val:
+            self.clipboard_clear()
+            self.clipboard_append(val)
+            self.update()
+            self.tunnel_pub_port_copy_btn.configure(text="¡Copiado!", fg_color="#00e676", text_color="#0d0e1a")
+            self.after(2000, lambda: self.tunnel_pub_port_copy_btn.configure(text="Copiar", fg_color="#1a1b30", text_color="#ffffff"))
+
+    def _save_tunnel_settings(self, event=None):
+        from ..utils.server_manager import ServerManager
+        mgr = ServerManager()
+        selected = self.alojamiento_server_var.get()
+        servers = mgr.get_all_servers()
+        srv = next((s for s in servers if s['nombre'] == selected), None)
+        if srv:
+            pub_ip = self.tunnel_pub_ip_entry.get().strip()
+            pub_port_str = self.tunnel_pub_port_entry.get().strip()
+            pub_port = int(pub_port_str) if pub_port_str.isdigit() else None
+            
+            # Update database
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE servidores SET tunnel_ip = ?, tunnel_port = ? WHERE id_servidor = ?",
+                (pub_ip, pub_port, srv['id_servidor'])
+            )
+            conn.commit()
+            conn.close()
+

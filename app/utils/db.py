@@ -1,5 +1,7 @@
 from pathlib import Path
 import sqlite3
+from typing import Union, Optional
+
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DATABASE_DIR = ROOT_DIR / "db"
@@ -189,6 +191,48 @@ def init_db():
     cursor.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_nota_estudiante_unidad ON notas(id_estudiante, id_semestre_periodo, id_unidad)"
     )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS servidores (
+            id_servidor INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE,
+            puerto INTEGER NOT NULL UNIQUE,
+            ram_mb INTEGER NOT NULL DEFAULT 512,
+            cpu_cores INTEGER NOT NULL DEFAULT 1,
+            disco_mb INTEGER NOT NULL DEFAULT 1024,
+            directorio_raiz TEXT NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'apagado',
+            pid INTEGER,
+            fecha_creacion TEXT NOT NULL,
+            ultimo_inicio TEXT,
+            ip_bind TEXT NOT NULL DEFAULT '0.0.0.0'
+        )
+        """
+    )
+    # Migrate any existing 127.0.0.1 bindings to 0.0.0.0
+    try:
+        cursor.execute("UPDATE servidores SET ip_bind = '0.0.0.0' WHERE ip_bind = '127.0.0.1'")
+    except Exception:
+        pass
+    # Add version column to servidores if it doesn't exist
+    try:
+        cursor.execute("PRAGMA table_info(servidores)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "version" not in cols:
+            cursor.execute("ALTER TABLE servidores ADD COLUMN version TEXT DEFAULT '1.4.4.9'")
+    except Exception:
+        pass
+    # Add tunnel_ip and tunnel_port columns to servidores if they don't exist
+    try:
+        cursor.execute("PRAGMA table_info(servidores)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "tunnel_ip" not in cols:
+            cursor.execute("ALTER TABLE servidores ADD COLUMN tunnel_ip TEXT DEFAULT 'communications-sn.gl.at.ply.gg'")
+        if "tunnel_port" not in cols:
+            cursor.execute("ALTER TABLE servidores ADD COLUMN tunnel_port INTEGER")
+    except Exception:
+        pass
     # Después de crear tablas y valores por defecto, migrar datos de DBs legacy si existen
     def _migrate_legacy_db(legacy_path):
         try:
@@ -691,3 +735,82 @@ def get_user_credentials(username: str):
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else ""
+
+
+# ---------------------------------------------------------------------------
+# Server CRUD
+# ---------------------------------------------------------------------------
+
+def insert_server(
+    nombre: str,
+    puerto: int,
+    ram_mb: int,
+    cpu_cores: int,
+    disco_mb: int,
+    directorio_raiz: str,
+    fecha_creacion: str,
+    ip_bind: str = "0.0.0.0",
+    version: str = "1.4.4.9",
+) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO servidores
+            (nombre, puerto, ram_mb, cpu_cores, disco_mb, directorio_raiz, fecha_creacion, ip_bind, version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (nombre, puerto, ram_mb, cpu_cores, disco_mb, directorio_raiz, fecha_creacion, ip_bind, version),
+    )
+    server_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return server_id
+
+
+def update_server_status(server_id: int, estado: str, pid: Union[int, None], ultimo_inicio: Union[str, None] = None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    if ultimo_inicio:
+        cursor.execute(
+            "UPDATE servidores SET estado = ?, pid = ?, ultimo_inicio = ? WHERE id_servidor = ?",
+            (estado, pid, ultimo_inicio, server_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE servidores SET estado = ?, pid = ? WHERE id_servidor = ?",
+            (estado, pid, server_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def delete_server(server_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM servidores WHERE id_servidor = ?", (server_id,))
+    conn.commit()
+    conn.close()
+
+
+def select_servers():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM servidores ORDER BY fecha_creacion DESC"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_server(server_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM servidores WHERE id_servidor = ?",
+        (server_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row

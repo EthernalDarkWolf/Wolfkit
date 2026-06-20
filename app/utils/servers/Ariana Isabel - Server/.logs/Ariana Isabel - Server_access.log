@@ -1,0 +1,6 @@
+{"time": "2026-06-18T16:51:34.371549", "event": "SERVER_START", "port": 8081, "root": "C:\\Proyectos\\Wolfkit\\servers\\Ariana Isabel - Server", "bind": "127.0.0.1", "rate_limit": 60}
+{"time": "2026-06-18T17:14:44.842816", "event": "SERVER_START", "port": 8081, "root": "C:\\Proyectos\\Wolfkit\\servers\\Ariana Isabel - Server", "bind": "127.0.0.1", "rate_limit": 60}
+{"time": "2026-06-18T17:14:55.314761", "ip": "127.0.0.1", "method": "GET", "path": "/", "status": 200, "note": ""}
+{"time": "2026-06-18T17:25:16.988540", "event": "SERVER_START", "port": 8081, "root": "C:\\Proyectos\\Wolfkit\\servers\\Ariana Isabel - Server", "bind": "127.0.0.1", "rate_limit": 60}
+{"time": "2026-06-18T17:25:23.565441", "ip": "127.0.0.1", "method": "GET", "path": "/", "status": 200, "note": ""}
+{"time": "2026-06-18T17:25:48.243054", "ip": "127.0.0.1", "method": "GET", "path": "/", "status": 200, "note": ""}
