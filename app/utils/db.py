@@ -814,3 +814,26 @@ def get_server(server_id: int):
     row = cursor.fetchone()
     conn.close()
     return row
+
+
+def delete_note(student_id: int, semester_id: int, unidad_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(notas)")
+    cols = [r[1] for r in cursor.fetchall()]
+    if "id_unidad" in cols:
+        cursor.execute(
+            "DELETE FROM notas WHERE id_estudiante = ? AND id_semestre_periodo = ? AND id_unidad = ?",
+            (student_id, semester_id, unidad_id),
+        )
+    else:
+        cursor.execute("SELECT nombre_unidad FROM unidades WHERE id_unidad = ?", (unidad_id,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                "DELETE FROM notas WHERE id_estudiante = ? AND id_semestre_periodo = ? AND unidad = ?",
+                (student_id, semester_id, row["nombre_unidad"]),
+            )
+    conn.commit()
+    conn.close()
+

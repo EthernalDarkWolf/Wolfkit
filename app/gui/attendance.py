@@ -19,6 +19,15 @@ try:
 except ImportError:
     _psutil = None
 
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+
 from app import APP_NAME
 from .base import GuiArchitect
 from ..utils.db import (
@@ -36,6 +45,7 @@ from ..utils.db import (
     select_today_attendance,
     select_units,
     delete_unit,
+    delete_note,
     insert_student,
     update_student,
     update_unit,
@@ -45,6 +55,7 @@ from ..utils.db import (
     update_user_credentials,
     get_user_credentials,
 )
+
 
 
 def get_widget_bg(widget):
@@ -1125,97 +1136,132 @@ class AttendanceApp(GuiArchitect):
 
     def _build_notes_tab(self):
         tab = self.tabview.tab("Notas")
+        tab.configure(fg_color="#0d0e1a")
+        
         tab.grid_columnconfigure(0, weight=1)
-        tab.grid_columnconfigure(1, weight=1)
+        tab.grid_rowconfigure(0, weight=0) # Header
+        tab.grid_rowconfigure(1, weight=1) # Main content
 
-        notes_frame = ctk.CTkFrame(tab, fg_color="#242424")
-        notes_frame.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
-        notes_frame.grid_columnconfigure(1, weight=1)
+        # ── HEADER ──────────────────────────────────────────────────────────
+        header_frame = ctk.CTkFrame(tab, fg_color="#12132a", corner_radius=12, height=75)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        header_frame.grid_propagate(False)
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, weight=0)
 
-        self.create_label("Registro de notas", master=notes_frame, font=("Arial", 18, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(14, 10)
-        )
+        # Title
+        title_f = ctk.CTkFrame(header_frame, fg_color="transparent")
+        title_f.grid(row=0, column=0, sticky="w", padx=16, pady=10)
+        
+        ctk.CTkLabel(
+            title_f,
+            text="✉ CONTROL DE CALIFICACIONES",
+            font=("Arial", 16, "bold"),
+            text_color="#0fbcf9",
+        ).pack(anchor="w")
 
-        self.create_label("Semestre:", master=notes_frame).grid(row=1, column=0, sticky="w", padx=14, pady=(8, 4))
+        ctk.CTkLabel(
+            title_f,
+            text="Gestiona las notas y genera reportes consolidados",
+            font=("Arial", 11),
+            text_color="#5a5c7a",
+        ).pack(anchor="w")
+
+        # Controls & Report Button
+        controls_f = ctk.CTkFrame(header_frame, fg_color="transparent")
+        controls_f.grid(row=0, column=1, sticky="e", padx=16, pady=10)
+
+        # Semester filter
+        ctk.CTkLabel(controls_f, text="SEM:", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(side="left", padx=(0, 4))
         self.notes_semester_filter_var = tk.StringVar(value="")
         self.notes_semester_filter_menu = ctk.CTkOptionMenu(
-            notes_frame,
+            controls_f,
             values=[],
             variable=self.notes_semester_filter_var,
-            fg_color="#3a3a3a",
-            button_color="#444444",
+            fg_color="#1a1b30",
+            button_color="#2c2e4a",
+            width=70,
+            height=32,
             dynamic_resizing=False,
         )
-        self.notes_semester_filter_menu.grid(row=1, column=1, sticky="ew", padx=14, pady=(8, 4))
+        self.notes_semester_filter_menu.pack(side="left", padx=(0, 12))
         self.notes_semester_filter_var.trace_add("write", self._on_notes_semester_changed)
 
-        self.create_label("Periodo:", master=notes_frame).grid(row=2, column=0, sticky="w", padx=14, pady=(8, 4))
+        # Period filter
+        ctk.CTkLabel(controls_f, text="PER:", font=("Arial", 10, "bold"), text_color="#8c8da5").pack(side="left", padx=(0, 4))
         self.notes_period_filter_var = tk.StringVar(value="")
         self.notes_period_filter_menu = ctk.CTkOptionMenu(
-            notes_frame,
+            controls_f,
             values=[],
             variable=self.notes_period_filter_var,
-            fg_color="#3a3a3a",
-            button_color="#444444",
+            fg_color="#1a1b30",
+            button_color="#2c2e4a",
+            width=70,
+            height=32,
             dynamic_resizing=False,
         )
-        self.notes_period_filter_menu.grid(row=2, column=1, sticky="ew", padx=14, pady=(8, 4))
+        self.notes_period_filter_menu.pack(side="left", padx=(0, 16))
         self.notes_period_filter_var.trace_add("write", self._on_notes_period_changed)
 
-        self.create_label("Selecciona un estudiante:", master=notes_frame).grid(row=3, column=0, sticky="w", padx=14, pady=(8, 4))
-        self.notes_student_menu = ctk.CTkOptionMenu(
-            notes_frame,
-            values=[],
-            fg_color="#3a3a3a",
-            button_color="#444444",
-            dynamic_resizing=False,
-            command=self.on_notes_student_selected,
+        # Generate Report Button
+        self.btn_generate_report = self.create_button(
+            "📄  REPORTE PDF",
+            command=self.generate_pdf_report,
+            master=controls_f,
+            font=("Arial", 11, "bold"),
+            fg_color="#2c2e4a",
+            hover_color="#212338",
+            text_color="#8c8da5",
+            width=130,
+            height=34,
+            corner_radius=10,
         )
-        self.notes_student_menu.grid(row=3, column=1, sticky="ew", padx=14, pady=(8, 4))
+        self.btn_generate_report.pack(side="left")
 
-        self.create_label("Unidad:", master=notes_frame).grid(row=4, column=0, sticky="w", padx=14, pady=(8, 4))
-        self.note_unit_var = tk.StringVar(value="")
-        self.note_unit_menu = ctk.CTkOptionMenu(
-            notes_frame,
-            values=[],
-            variable=self.note_unit_var,
-            fg_color="#3a3a3a",
-            button_color="#444444",
-            dynamic_resizing=False,
+        # ── BODY PANEL ──────────────────────────────────────────────────────
+        body_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        body_frame.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        body_frame.grid_columnconfigure(0, weight=2) # Left list
+        body_frame.grid_columnconfigure(1, weight=3) # Right details
+        body_frame.grid_rowconfigure(0, weight=1)
+
+        # ── Left Column: Student directory
+        left_panel = ctk.CTkFrame(body_frame, fg_color="#12132a", corner_radius=12)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        ctk.CTkLabel(
+            left_panel,
+            text="ESTUDIANTES EN EL PERIODO",
+            font=("Arial", 12, "bold"),
+            text_color="#ffffff",
+            anchor="w"
+        ).pack(fill="x", padx=16, pady=(16, 2))
+
+        ctk.CTkLabel(
+            left_panel,
+            text="Selecciona un estudiante para ver detalles",
+            font=("Arial", 10),
+            text_color="#5a5c7a",
+            anchor="w"
+        ).pack(fill="x", padx=16, pady=(0, 12))
+
+        self.notes_student_list_scroll = ctk.CTkScrollableFrame(left_panel, fg_color="transparent")
+        self.notes_student_list_scroll.pack(fill="both", expand=True, padx=4, pady=(0, 8))
+
+        # ── Right Column: Detail and grade editing
+        self.notes_detail_container = ctk.CTkFrame(body_frame, fg_color="#12132a", corner_radius=12)
+        self.notes_detail_container.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        # Default state: empty message
+        empty_lbl = ctk.CTkLabel(
+            self.notes_detail_container,
+            text="Selecciona un estudiante del listado\npara gestionar sus calificaciones.",
+            font=("Arial", 13),
+            text_color="#5a5c7a",
+            justify="center"
         )
-        self.note_unit_menu.grid(row=4, column=1, sticky="ew", padx=14, pady=(8, 4))
-        self.create_button("+", command=self.add_unit_from_notes, master=notes_frame, width=36).grid(row=4, column=2, sticky="w", padx=(6,14), pady=(8,4))
+        empty_lbl.pack(expand=True, pady=100)
 
-        self.create_label("Nota:", master=notes_frame).grid(row=5, column=0, sticky="w", padx=14, pady=(8, 4))
-        self.entry_note_value = self.create_entry("Nota", master=notes_frame)
-        self.entry_note_value.grid(row=5, column=1, sticky="ew", padx=14, pady=(8, 4))
-
-        self.create_label("Comentarios:", master=notes_frame).grid(row=6, column=0, sticky="w", padx=14, pady=(8, 4))
-        self.entry_note_comments = self.create_entry("Comentarios", master=notes_frame)
-        self.entry_note_comments.grid(row=6, column=1, sticky="ew", padx=14, pady=(8, 4))
-
-        self.create_button("Guardar nota", command=self.save_note, master=notes_frame).grid(
-            row=7, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 4)
-        )
-
-        self.notes_message_label = self.create_label("", master=notes_frame, font=("Arial", 12))
-        self.notes_message_label.grid(row=8, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 14))
-
-        notes_history_frame = ctk.CTkFrame(tab, fg_color="#242424")
-        notes_history_frame.grid(row=0, column=1, sticky="nsew", padx=12, pady=12)
-        notes_history_frame.grid_columnconfigure(0, weight=1)
-        notes_history_frame.grid_rowconfigure(1, weight=1)
-
-        self.create_label("Notas guardadas", master=notes_history_frame, font=("Arial", 18, "bold")).grid(
-            row=0, column=0, sticky="w", padx=14, pady=(14, 10)
-        )
-
-        # Etiqueta para mostrar el estudiante cuyo registro de notas se está viendo
-        self.notes_history_student_label = self.create_label("", master=notes_history_frame, font=("Arial", 12, "bold"))
-        self.notes_history_student_label.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 8))
-
-        self.notes_list_frame = ctk.CTkScrollableFrame(notes_history_frame, fg_color="#2c2c2c")
-        self.notes_list_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
     def _build_units_tab(self):
         tab = self.tabview.tab("Unidades")
@@ -1537,10 +1583,18 @@ class AttendanceApp(GuiArchitect):
         self._update_notes_period_filter_menu()
         self.refresh_notes_student_menu()
         self.refresh_note_units_menu()
+        try:
+            self.check_report_button_state()
+        except Exception:
+            pass
 
     def _on_notes_period_changed(self, *args):
         self.refresh_notes_student_menu()
         self.refresh_note_units_menu()
+        try:
+            self.check_report_button_state()
+        except Exception:
+            pass
 
     def refresh_note_units_menu(self):
         semester_label = self.notes_semester_filter_var.get() if hasattr(self, 'notes_semester_filter_var') else None
@@ -1564,8 +1618,9 @@ class AttendanceApp(GuiArchitect):
         if not values:
             values = ["No hay unidades"]
 
-        self.note_unit_menu.configure(values=values)
-        self.note_unit_menu.set(values[0])
+        if hasattr(self, 'note_unit_menu') and self.note_unit_menu and self.note_unit_menu.winfo_exists():
+            self.note_unit_menu.configure(values=values)
+            self.note_unit_menu.set(values[0])
 
     def add_unit_from_notes(self):
         semester_label = self.notes_semester_filter_var.get() if hasattr(self, 'notes_semester_filter_var') else None
@@ -1863,58 +1918,400 @@ class AttendanceApp(GuiArchitect):
         except Exception:
             pass
 
+    def get_student_definitive_grade(self, student_id, semester_id):
+        if not semester_id:
+            return 0.0, 0
+        units = select_units(semester_id)
+        if not units:
+            return 0.0, 0
+        
+        notes = select_notes(student_id, semester_id)
+        sum_grades = 0.0
+        graded_count = 0
+        for u in units:
+            note_row = next((n for n in notes if n["unidad"] == u["nombre_unidad"]), None)
+            if note_row:
+                try:
+                    val = float(note_row["nota"].replace(",", "."))
+                    sum_grades += val
+                    graded_count += 1
+                except (ValueError, TypeError):
+                    pass
+        # Promedio definitivo = suma de notas dividido entre el número total de unidades
+        average = sum_grades / len(units) if len(units) > 0 else 0.0
+        return average, len(units)
+
+    def select_student_for_notes(self, student_id):
+        self.selected_note_student_id = student_id
+        self.refresh_notes_student_menu()
+
+    def delete_student_grade(self, unit_id):
+        if not hasattr(self, 'selected_note_student_id') or self.selected_note_student_id is None:
+            return
+
+        semester_label = self.notes_semester_filter_var.get()
+        period_label = self.notes_period_filter_var.get()
+        semester_id = next(
+            (row["id_SemestrePeriodo"] for row in select_semesters() if row["numero_semestre"] == semester_label and row["numero_periodo"] == period_label),
+            None,
+        )
+
+        if not semester_id:
+            return
+
+        if not messagebox.askyesno("Confirmar eliminación", "¿Deseas eliminar esta calificación?"):
+            return
+
+        try:
+            delete_note(self.selected_note_student_id, semester_id, unit_id)
+            self.refresh_notes_student_menu()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo eliminar la nota: {e}")
+
+    def check_report_button_state(self):
+        semester_label = self.notes_semester_filter_var.get() if hasattr(self, 'notes_semester_filter_var') else None
+        period_label = self.notes_period_filter_var.get() if hasattr(self, 'notes_period_filter_var') else None
+        semester_id = None
+        if semester_label and period_label:
+            semester_id = next(
+                (row["id_SemestrePeriodo"] for row in select_semesters() if row["numero_semestre"] == semester_label and row["numero_periodo"] == period_label),
+                None,
+            )
+
+        students_count = 0
+        if semester_id:
+            students = select_students()
+            filtered = [s for s in students if s["numero_semestre"] == semester_label and s["numero_periodo"] == period_label]
+            students_count = len(filtered)
+
+        if students_count > 0:
+            self.btn_generate_report.configure(state="normal", fg_color="#00e676", text_color="#0d0e1a")
+        else:
+            self.btn_generate_report.configure(state="disabled", fg_color="#2c2e4a", text_color="#8c8da5")
+
+    def generate_pdf_report(self):
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showerror(
+                "Error de Dependencia",
+                "La biblioteca 'reportlab' no está instalada.\n"
+                "Para generar reportes PDF, por favor ejecute:\n"
+                "  pip install reportlab\nen su terminal o consola."
+            )
+            return
+
+        semester_label = self.notes_semester_filter_var.get()
+        period_label = self.notes_period_filter_var.get()
+        semester_id = None
+        if semester_label and period_label:
+            semester_id = next(
+                (row["id_SemestrePeriodo"] for row in select_semesters() if row["numero_semestre"] == semester_label and row["numero_periodo"] == period_label),
+                None,
+            )
+
+        if not semester_id:
+            messagebox.showwarning("Reportes", "Selecciona un semestre y periodo válidos.")
+            return
+
+        students = select_students()
+        filtered_students = [s for s in students if s["numero_semestre"] == semester_label and s["numero_periodo"] == period_label]
+
+        if not filtered_students:
+            messagebox.showwarning("Reportes", "No hay estudiantes registrados en este semestre y periodo.")
+            return
+
+        # Ordenar estudiantes numéricamente por su cédula
+        def get_ci_num(st):
+            digits = "".join(c for c in st["ci"] if c.isdigit())
+            return int(digits) if digits else 0
+
+        filtered_students.sort(key=get_ci_num)
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            title="Guardar Reporte de Calificaciones",
+            initialfile=f"reporte_notas_sem_{semester_label}_per_{period_label}.pdf"
+        )
+
+        if not filename:
+            return
+
+        try:
+            doc = SimpleDocTemplate(
+                filename,
+                pagesize=letter,
+                rightMargin=54, leftMargin=54, topMargin=54, bottomMargin=54
+            )
+            story = []
+
+            styles = getSampleStyleSheet()
+            
+            title_style = ParagraphStyle(
+                'ReportTitle',
+                parent=styles['Normal'],
+                fontName='Helvetica-Bold',
+                fontSize=18,
+                textColor=colors.HexColor('#1b1c2b'),
+                spaceAfter=6,
+                alignment=1
+            )
+            
+            subtitle_style = ParagraphStyle(
+                'ReportSubtitle',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=11,
+                textColor=colors.HexColor('#5a5c7a'),
+                spaceAfter=20,
+                alignment=1
+            )
+            
+            meta_style = ParagraphStyle(
+                'ReportMeta',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=10,
+                textColor=colors.HexColor('#2c2e4a'),
+                spaceAfter=15
+            )
+            
+            th_style = ParagraphStyle(
+                'TableHeader',
+                parent=styles['Normal'],
+                fontName='Helvetica-Bold',
+                fontSize=10,
+                textColor=colors.white,
+                alignment=1
+            )
+            
+            td_style = ParagraphStyle(
+                'TableCell',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=9,
+                textColor=colors.HexColor('#1c1e2f')
+            )
+            
+            td_grade_style = ParagraphStyle(
+                'TableCellGrade',
+                parent=styles['Normal'],
+                fontName='Helvetica-Bold',
+                fontSize=10,
+                textColor=colors.HexColor('#1b1c2b'),
+                alignment=1
+            )
+
+            story.append(Paragraph("SISTEMA DE CONTROL DE ESTUDIANTES WOLFKIT", title_style))
+            story.append(Paragraph("REPORTE CONSOLIDADO DE CALIFICACIONES", subtitle_style))
+            story.append(Spacer(1, 10))
+
+            from datetime import datetime
+            current_date_str = datetime.now().strftime("%d/%m/%Y %I:%M %p")
+            
+            meta_text = (
+                f"<b>Semestre:</b> {semester_label} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
+                f"<b>Periodo:</b> {period_label} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; "
+                f"<b>Total Estudiantes:</b> {len(filtered_students)}<br/>"
+                f"<b>Fecha de Generación:</b> {current_date_str}"
+            )
+            story.append(Paragraph(meta_text, meta_style))
+            story.append(Spacer(1, 10))
+
+            table_data = [
+                [
+                    Paragraph("CÉDULA", th_style),
+                    Paragraph("APELLIDO(S)", th_style),
+                    Paragraph("NOMBRE(S)", th_style),
+                    Paragraph("NOTA DEFINITIVA", th_style)
+                ]
+            ]
+
+            for s in filtered_students:
+                avg, _ = self.get_student_definitive_grade(s["id_estudiantes"], semester_id)
+                avg_str = f"{avg:.2f}"
+                
+                table_data.append([
+                    Paragraph(s["ci"], td_style),
+                    Paragraph(s["apellidos"], td_style),
+                    Paragraph(s["nombres"], td_style),
+                    Paragraph(avg_str, td_grade_style)
+                ])
+
+            col_widths = [100, 160, 160, 84]
+            t = Table(table_data, colWidths=col_widths)
+            
+            t_style = TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#12132a')),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                ('TOPPADDING', (0, 0), (-1, 0), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ])
+            
+            for i in range(1, len(table_data)):
+                if i % 2 == 0:
+                    t_style.add('BACKGROUND', (0, i), (-1, i), colors.HexColor('#f7fafc'))
+                else:
+                    t_style.add('BACKGROUND', (0, i), (-1, i), colors.white)
+                    
+            t.setStyle(t_style)
+            story.append(t)
+            
+            def add_page_decorations(canvas, doc):
+                canvas.saveState()
+                canvas.setStrokeColor(colors.HexColor('#12132a'))
+                canvas.setLineWidth(1)
+                canvas.line(54, 738, 558, 738)
+                canvas.line(54, 50, 558, 50)
+                canvas.setFont('Helvetica', 8)
+                canvas.setFillColor(colors.HexColor('#8c8da5'))
+                canvas.drawString(54, 38, "Wolfkit Control de Estudiantes — Reporte de Calificaciones")
+                canvas.drawRightString(558, 38, f"Página {doc.page}")
+                canvas.restoreState()
+
+            doc.build(story, onFirstPage=add_page_decorations, onLaterPages=add_page_decorations)
+            messagebox.showinfo("Reportes", f"El reporte en PDF ha sido generado con éxito en:\n{filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo generar el reporte en PDF: {e}")
+
     def refresh_notes_student_menu(self):
         students = select_students()
         semester_value = self.notes_semester_filter_var.get() if hasattr(self, 'notes_semester_filter_var') else None
         period_value = self.notes_period_filter_var.get() if hasattr(self, 'notes_period_filter_var') else None
 
-        values = []
+        filtered_students = []
         self.notes_student_options = {}
         for student in students:
             if semester_value and period_value and semester_value != "No hay estudiantes" and period_value != "No hay estudiantes":
                 if student["numero_semestre"] != semester_value or student["numero_periodo"] != period_value:
                     continue
-
+            filtered_students.append(student)
             label = f"{student['ci']} · {student['nombres']} {student['apellidos']}"
-            values.append(label)
             self.notes_student_options[label] = student["id_estudiantes"]
 
-        if not values:
-            values = ["No hay estudiantes"]
-            self.notes_student_menu.configure(values=values)
-            self.notes_student_menu.set(values[0])
+        # Limpiar listado de la izquierda
+        for w in self.notes_student_list_scroll.winfo_children():
+            w.destroy()
+
+        if not filtered_students:
+            self.create_label(
+                "No hay estudiantes registrados",
+                master=self.notes_student_list_scroll,
+                font=("Arial", 11)
+            ).pack(pady=20)
             self.selected_note_student_id = None
             self.refresh_notes_list()
+            self.check_report_button_state()
             return
 
-        self.notes_student_menu.configure(values=values)
-        if self.notes_student_menu.get() not in values:
-            self.notes_student_menu.set(values[0])
-        self.on_notes_student_selected(self.notes_student_menu.get())
+        semester_id = None
+        if semester_value and period_value:
+            semester_id = next(
+                (row["id_SemestrePeriodo"] for row in select_semesters() if row["numero_semestre"] == semester_value and row["numero_periodo"] == period_value),
+                None,
+            )
 
-    def on_notes_student_selected(self, value):
-        if not value or value not in self.notes_student_options:
-            self.selected_note_student_id = None
-            self.refresh_notes_list()
+        for student in filtered_students:
+            student_id = student["id_estudiantes"]
+            avg, _ = self.get_student_definitive_grade(student_id, semester_id)
+            
+            # Colores del badge según promedio
+            if avg >= 9.5: # Nota aprobatoria estándar
+                badge_bg = "#0f3a20"
+                badge_fg = "#00e676"
+            elif avg > 0:
+                badge_bg = "#3d1e1e"
+                badge_fg = "#ff4757"
+            else:
+                badge_bg = "#1c1e2f"
+                badge_fg = "#8c8da5"
+
+            is_selected = (self.selected_note_student_id == student_id)
+            card_bg = "#212338" if is_selected else "#141524"
+            border_color = "#0fbcf9" if is_selected else "#141524"
+            border_w = 1 if is_selected else 0
+
+            # Crear tarjeta de estudiante
+            card = ctk.CTkFrame(
+                self.notes_student_list_scroll,
+                fg_color=card_bg,
+                corner_radius=10,
+                border_width=border_w,
+                border_color=border_color
+            )
+            card.pack(fill="x", padx=6, pady=4)
+            card.configure(cursor="hand2")
+
+            info_frame = ctk.CTkFrame(card, fg_color="transparent")
+            info_frame.pack(side="left", fill="both", expand=True, padx=12, pady=10)
+
+            name_lbl = ctk.CTkLabel(
+                info_frame,
+                text=f"{student['nombres']} {student['apellidos']}".upper(),
+                font=("Arial", 11, "bold"),
+                text_color="#ffffff",
+                anchor="w"
+            )
+            name_lbl.pack(anchor="w")
+
+            ci_lbl = ctk.CTkLabel(
+                info_frame,
+                text=f"CI: {student['ci']}",
+                font=("Arial", 9),
+                text_color="#8c8da5",
+                anchor="w"
+            )
+            ci_lbl.pack(anchor="w")
+
+            # Badge del promedio definitivo
+            badge = ctk.CTkFrame(card, fg_color=badge_bg, corner_radius=6, height=26, width=50)
+            badge.pack(side="right", padx=12, pady=10)
+            badge.pack_propagate(False)
+
+            badge_lbl = ctk.CTkLabel(
+                badge,
+                text=f"{avg:.1f}" if avg > 0 else "0.0",
+                font=("Arial", 10, "bold"),
+                text_color=badge_fg
+            )
+            badge_lbl.pack(fill="both", expand=True)
+
+            # Enlazar clics recursivamente para seleccionar estudiante
+            def make_select_callback(sid=student_id):
+                return lambda e: self.select_student_for_notes(sid)
+
+            card.bind("<Button-1>", make_select_callback())
+            info_frame.bind("<Button-1>", make_select_callback())
+            name_lbl.bind("<Button-1>", make_select_callback())
+            ci_lbl.bind("<Button-1>", make_select_callback())
+            badge.bind("<Button-1>", make_select_callback())
+            badge_lbl.bind("<Button-1>", make_select_callback())
+
+        # Si el seleccionado ya no es válido, por defecto seleccionar el primero
+        student_ids = [s["id_estudiantes"] for s in filtered_students]
+        if self.selected_note_student_id not in student_ids:
+            self.selected_note_student_id = student_ids[0]
+            self.after(50, self.refresh_notes_student_menu)
             return
 
-        self.selected_note_student_id = self.notes_student_options[value]
         self.refresh_notes_list()
+        self.check_report_button_state()
 
     def refresh_notes_list(self):
-        for widget in self.notes_list_frame.winfo_children():
+        for widget in self.notes_detail_container.winfo_children():
             widget.destroy()
 
-        # Actualizar encabezado del historial de notas
-        if not hasattr(self, 'notes_history_student_label'):
-            pass
         if not hasattr(self, 'selected_note_student_id') or self.selected_note_student_id is None:
-            if hasattr(self, 'notes_history_student_label'):
-                try:
-                    self.notes_history_student_label.configure(text="")
-                except Exception:
-                    pass
-            self.create_label("Selecciona un estudiante para ver sus notas.", master=self.notes_list_frame, font=("Arial", 12)).pack(padx=14, pady=14)
+            empty_frame = ctk.CTkFrame(self.notes_detail_container, fg_color="transparent")
+            empty_frame.pack(fill="both", expand=True)
+            ctk.CTkLabel(
+                empty_frame,
+                text="Selecciona un estudiante del listado\npara gestionar sus calificaciones.",
+                font=("Arial", 13),
+                text_color="#5a5c7a",
+                justify="center"
+            ).pack(expand=True, pady=100)
             return
 
         semester_label = self.notes_semester_filter_var.get() if hasattr(self, 'notes_semester_filter_var') else None
@@ -1927,38 +2324,205 @@ class AttendanceApp(GuiArchitect):
             )
 
         if not semester_id:
-            if hasattr(self, 'notes_history_student_label'):
-                try:
-                    self.notes_history_student_label.configure(text="")
-                except Exception:
-                    pass
-            self.create_label("Selecciona semestre y periodo válidos.", master=self.notes_list_frame, font=("Arial", 12)).pack(padx=14, pady=14)
+            ctk.CTkLabel(
+                self.notes_detail_container,
+                text="Seleccione un semestre y periodo válidos.",
+                font=("Arial", 12),
+                text_color="#f55a5a"
+            ).pack(pady=40)
             return
 
-        rows = select_notes(self.selected_note_student_id, semester_id)
-        # Mostrar nombre del estudiante en cabecera
         student = next((s for s in select_students() if s["id_estudiantes"] == self.selected_note_student_id), None)
-        if student:
-            nombre_full = f"{student['nombres']} {student['apellidos']}"
-            try:
-                self.notes_history_student_label.configure(text=f"Estudiante: {nombre_full}")
-            except Exception:
-                pass
-        else:
-            try:
-                self.notes_history_student_label.configure(text="Estudiante: (desconocido)")
-            except Exception:
-                pass
-
-        if not rows:
-            self.create_label("No hay notas registradas para este estudiante en el semestre seleccionado.", master=self.notes_list_frame, font=("Arial", 12)).pack(padx=14, pady=14)
+        if not student:
+            ctk.CTkLabel(
+                self.notes_detail_container,
+                text="No se encontró la información del estudiante.",
+                font=("Arial", 12),
+                text_color="#f55a5a"
+            ).pack(pady=40)
             return
 
-        for note in rows:
-            text = f"Unidad: {note['unidad']} - Nota: {note['nota']}"
-            self.create_label(text, master=self.notes_list_frame, anchor="w", font=("Arial", 12, "bold")).pack(fill="x", padx=12, pady=(10, 2))
-            if note['comentarios']:
-                self.create_label(f"Comentarios: {note['comentarios']}", master=self.notes_list_frame, anchor="w", font=("Arial", 11)).pack(fill="x", padx=12, pady=(0, 8))
+        # ── CABECERA DEL ESTUDIANTE ──────────────────────────────────────
+        header_card = ctk.CTkFrame(self.notes_detail_container, fg_color="#141524", corner_radius=10, border_width=1, border_color="#2c2e4a")
+        header_card.pack(fill="x", padx=16, pady=(16, 8))
+        
+        info_sub = ctk.CTkFrame(header_card, fg_color="transparent")
+        info_sub.pack(side="left", padx=16, pady=12)
+        
+        ctk.CTkLabel(
+            info_sub,
+            text=f"{student['nombres']} {student['apellidos']}".upper(),
+            font=("Arial", 14, "bold"),
+            text_color="#ffffff",
+            anchor="w"
+        ).pack(anchor="w")
+        
+        ctk.CTkLabel(
+            info_sub,
+            text=f"CI: {student['ci']}  •  Semestre {student['numero_semestre']} - Periodo {student['numero_periodo']}",
+            font=("Arial", 10),
+            text_color="#8c8da5",
+            anchor="w"
+        ).pack(anchor="w")
+
+        # Nota definitiva en cabecera
+        avg, _ = self.get_student_definitive_grade(self.selected_note_student_id, semester_id)
+        avg_badge_bg = "#0f3a20" if avg >= 9.5 else ("#3d1e1e" if avg > 0 else "#1c1e2f")
+        avg_badge_fg = "#00e676" if avg >= 9.5 else ("#ff4757" if avg > 0 else "#8c8da5")
+        
+        badge_header = ctk.CTkFrame(header_card, fg_color=avg_badge_bg, corner_radius=8, height=36, width=70)
+        badge_header.pack(side="right", padx=16, pady=12)
+        badge_header.pack_propagate(False)
+        
+        ctk.CTkLabel(
+            badge_header,
+            text=f"{avg:.2f}",
+            font=("Arial", 12, "bold"),
+            text_color=avg_badge_fg
+        ).pack(fill="both", expand=True)
+
+        # ── LISTA DE CALIFICACIONES POR UNIDAD ─────────────────────────────────
+        grades_scroll = ctk.CTkScrollableFrame(self.notes_detail_container, fg_color="transparent", height=190)
+        grades_scroll.pack(fill="both", expand=True, padx=16, pady=4)
+
+        units = select_units(semester_id)
+        notes = select_notes(self.selected_note_student_id, semester_id)
+
+        if not units:
+            ctk.CTkLabel(
+                grades_scroll,
+                text="No hay unidades creadas para este semestre.\nUse la pestaña 'Unidades' para agregar una.",
+                font=("Arial", 11),
+                text_color="#8c8da5",
+                justify="center"
+            ).pack(pady=30)
+        else:
+            for u in units:
+                note_row = next((n for n in notes if n["unidad"] == u["nombre_unidad"]), None)
+                unit_card = ctk.CTkFrame(grades_scroll, fg_color="#181928", corner_radius=8)
+                unit_card.pack(fill="x", padx=2, pady=3)
+
+                info_f = ctk.CTkFrame(unit_card, fg_color="transparent")
+                info_f.pack(side="left", fill="both", expand=True, padx=12, pady=8)
+
+                ctk.CTkLabel(
+                    info_f,
+                    text=u["nombre_unidad"].upper(),
+                    font=("Arial", 11, "bold"),
+                    text_color="#ffffff",
+                    anchor="w"
+                ).pack(anchor="w")
+
+                comment_str = f"Comentarios: {note_row['comentarios']}" if (note_row and note_row['comentarios']) else "Sin comentarios"
+                ctk.CTkLabel(
+                    info_f,
+                    text=comment_str,
+                    font=("Arial", 9),
+                    text_color="#5a5c7a",
+                    anchor="w"
+                ).pack(anchor="w")
+
+                actions_f = ctk.CTkFrame(unit_card, fg_color="transparent")
+                actions_f.pack(side="right", padx=12, pady=8)
+
+                if note_row:
+                    val = note_row["nota"]
+                    try:
+                        f_val = float(val.replace(",", "."))
+                        val_color = "#00e676" if f_val >= 9.5 else "#ff4757"
+                    except ValueError:
+                        val_color = "#ffffff"
+
+                    ctk.CTkLabel(
+                        actions_f,
+                        text=f"Nota: {val}",
+                        font=("Arial", 11, "bold"),
+                        text_color=val_color
+                    ).pack(side="left", padx=(0, 12))
+
+                    self.create_button(
+                        "🗑",
+                        command=lambda uid=u["id_unidad"]: self.delete_student_grade(uid),
+                        master=actions_f,
+                        width=28,
+                        height=24,
+                        fg_color="#3d1e1e",
+                        hover_color="#5a2c2c",
+                        text_color="#ff4757"
+                    ).pack(side="left")
+                else:
+                    ctk.CTkLabel(
+                        actions_f,
+                        text="Sin Nota",
+                        font=("Arial", 10, "italic"),
+                        text_color="#5a5c7a"
+                    ).pack(side="left")
+
+        # ── FORMULARIO DE REGISTRO RÁPIDO ─────────────────────────────────────
+        form_card = ctk.CTkFrame(self.notes_detail_container, fg_color="#141524", corner_radius=10, border_width=1, border_color="#2c2e4a")
+        form_card.pack(fill="x", padx=16, pady=(8, 16))
+
+        ctk.CTkLabel(
+            form_card,
+            text="REGISTRAR / ACTUALIZAR CALIFICACIÓN",
+            font=("Arial", 11, "bold"),
+            text_color="#0fbcf9",
+            anchor="w"
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(12, 8))
+
+        ctk.CTkLabel(form_card, text="UNIDAD", font=("Arial", 10, "bold"), text_color="#8c8da5").grid(row=1, column=0, sticky="w", padx=14, pady=(4, 2))
+        
+        unit_menu_f = ctk.CTkFrame(form_card, fg_color="transparent")
+        unit_menu_f.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+        unit_menu_f.grid_columnconfigure(0, weight=1)
+
+        self.note_unit_menu = ctk.CTkOptionMenu(
+            unit_menu_f,
+            values=[],
+            variable=self.note_unit_var,
+            fg_color="#1a1b30",
+            button_color="#2c2e4a",
+            height=32,
+            dynamic_resizing=False
+        )
+        self.note_unit_menu.grid(row=0, column=0, sticky="ew")
+        
+        self.create_button(
+            "+", 
+            command=self.add_unit_from_notes, 
+            master=unit_menu_f, 
+            width=32, 
+            height=32,
+            fg_color="#1a1b30",
+            hover_color="#2c2e4a",
+            text_color="#0fbcf9"
+        ).grid(row=0, column=1, padx=(6, 0))
+
+        ctk.CTkLabel(form_card, text="CALIFICACIÓN", font=("Arial", 10, "bold"), text_color="#8c8da5").grid(row=1, column=1, sticky="w", padx=14, pady=(4, 2))
+        self.entry_note_value = self.create_entry("Nota", master=form_card, fg_color="#1a1b30", border_color="#2c2e4a", height=32)
+        self.entry_note_value.grid(row=2, column=1, sticky="ew", padx=14, pady=(0, 10))
+
+        save_btn = self.create_button(
+            "GUARDAR NOTA",
+            command=self.save_note,
+            master=form_card,
+            font=("Arial", 10, "bold"),
+            fg_color="#0fbcf9",
+            hover_color="#0da0d4",
+            text_color="#0d0e1a",
+            height=32
+        )
+        save_btn.grid(row=2, column=2, sticky="ew", padx=14, pady=(0, 10))
+
+        ctk.CTkLabel(form_card, text="COMENTARIOS", font=("Arial", 10, "bold"), text_color="#8c8da5").grid(row=3, column=0, columnspan=3, sticky="w", padx=14, pady=(4, 2))
+        self.entry_note_comments = self.create_entry("Comentarios (opcional)", master=form_card, fg_color="#1a1b30", border_color="#2c2e4a", height=32)
+        self.entry_note_comments.grid(row=4, column=0, columnspan=3, sticky="ew", padx=14, pady=(0, 10))
+
+        self.notes_message_label = ctk.CTkLabel(form_card, text="", font=("Arial", 10))
+        self.notes_message_label.grid(row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 8))
+
+        form_card.grid_columnconfigure((0, 1, 2), weight=1)
+        self.refresh_note_units_menu()
 
     def save_note(self):
         if not hasattr(self, 'selected_note_student_id') or self.selected_note_student_id is None:
@@ -1997,7 +2561,8 @@ class AttendanceApp(GuiArchitect):
         self.note_unit_menu.set(unidad_label)
         self.entry_note_value.delete(0, "end")
         self.entry_note_comments.delete(0, "end")
-        self.refresh_notes_list()
+        self.refresh_notes_student_menu()
+
 
     def _update_admin_period_filter_menu(self):
         semester_value = self.admin_semester_filter_menu.get()
@@ -2120,6 +2685,10 @@ class AttendanceApp(GuiArchitect):
             self.refresh_student_list()
             self.refresh_student_menu()
             self.refresh_delete_menu()
+            try:
+                self.refresh_notes_student_menu()
+            except Exception:
+                pass
         except sqlite3.IntegrityError:
             self.add_message_label.configure(text="La cédula ya existe en la base de datos.", text_color="#f55a5a")
 
@@ -2207,6 +2776,10 @@ class AttendanceApp(GuiArchitect):
         self.refresh_admin_student_list()
         self.refresh_today_status()
         self.refresh_history()
+        try:
+            self.refresh_notes_student_menu()
+        except Exception:
+            pass
 
     def delete_single_student(self, student_id: int):
         student = next((s for s in select_students() if s["id_estudiantes"] == student_id), None)
@@ -2228,6 +2801,10 @@ class AttendanceApp(GuiArchitect):
         self.refresh_admin_student_list()
         self.refresh_today_status()
         self.refresh_history()
+        try:
+            self.refresh_notes_student_menu()
+        except Exception:
+            pass
 
     def confirm_delete_student(self):
         label = self.delete_student_menu.get()
@@ -2256,6 +2833,10 @@ class AttendanceApp(GuiArchitect):
         self.refresh_delete_menu()
         self.refresh_today_status()
         self.refresh_history()
+        try:
+            self.refresh_notes_student_menu()
+        except Exception:
+            pass
 
     def refresh_today_status(self):
         if self.selected_student_id is None:
