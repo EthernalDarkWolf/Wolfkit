@@ -113,6 +113,40 @@ def init_db():
     except Exception:
         pass
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS acp_cuotas (
+            id_cuota INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            costo_total REAL DEFAULT 0.0
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS acp_pagos (
+            id_pago INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_cuota INTEGER NOT NULL,
+            cantidad_pagada REAL NOT NULL,
+            fecha TEXT NOT NULL,
+            ruta_comprobante TEXT,
+            FOREIGN KEY (id_cuota) REFERENCES acp_cuotas(id_cuota)
+        )
+        """
+    )
+
+    # Asegurar columnas cantidad_ves y tasa_cambio en acp_pagos
+    try:
+        cursor.execute("PRAGMA table_info(acp_pagos)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "cantidad_ves" not in cols:
+            cursor.execute("ALTER TABLE acp_pagos ADD COLUMN cantidad_ves REAL DEFAULT 0.0")
+        if "tasa_cambio" not in cols:
+            cursor.execute("ALTER TABLE acp_pagos ADD COLUMN tasa_cambio REAL DEFAULT 0.0")
+    except Exception:
+        pass
+
     cursor.executemany(
         "INSERT OR IGNORE INTO asist (nombre_asistencia) VALUES (?)",
         [("Asistió",), ("No Asistió",)],
@@ -837,3 +871,108 @@ def delete_note(student_id: int, semester_id: int, unidad_id: int):
     conn.commit()
     conn.close()
 
+
+def insert_acp_cuota(nombre: str) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO acp_cuotas (nombre, costo_total) VALUES (?, 0.0)", (nombre,))
+    cuota_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return cuota_id
+
+def get_acp_cuotas() -> list:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM acp_cuotas ORDER BY id_cuota DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def get_acp_cuota(id_cuota: int) -> dict:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM acp_cuotas WHERE id_cuota = ?", (id_cuota,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_acp_costo(id_cuota: int, costo_total: float):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE acp_cuotas SET costo_total = ? WHERE id_cuota = ?", (costo_total, id_cuota))
+    conn.commit()
+    conn.close()
+
+def delete_acp_cuota(id_cuota: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    # First delete all associated pagost to avoid orphans (and optionally their files)
+    cursor.execute("SELECT ruta_comprobante FROM acp_pagos WHERE id_cuota = ?", (id_cuota,))
+    rows = cursor.fetchall()
+    import os
+    for row in rows:
+        if row['ruta_comprobante'] and os.path.exists(row['ruta_comprobante']):
+            try:
+                os.remove(row['ruta_comprobante'])
+            except Exception:
+                pass
+    cursor.execute("DELETE FROM acp_pagos WHERE id_cuota = ?", (id_cuota,))
+    # Then delete the cuota
+    cursor.execute("DELETE FROM acp_cuotas WHERE id_cuota = ?", (id_cuota,))
+    conn.commit()
+    conn.close()
+
+def update_acp_cuota_name(id_cuota: int, nombre: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE acp_cuotas SET nombre = ? WHERE id_cuota = ?", (nombre, id_cuota))
+    conn.commit()
+    conn.close()
+
+def insert_acp_pago(id_cuota: int, cantidad_pagada: float, fecha: str, ruta_comprobante: str = None, cantidad_ves: float = 0.0, tasa_cambio: float = 0.0) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO acp_pagos (id_cuota, cantidad_pagada, fecha, ruta_comprobante, cantidad_ves, tasa_cambio) VALUES (?, ?, ?, ?, ?, ?)",
+        (id_cuota, cantidad_pagada, fecha, ruta_comprobante, cantidad_ves, tasa_cambio)
+    )
+    pago_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return pago_id
+
+def get_acp_pagos(id_cuota: int) -> list:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM acp_pagos WHERE id_cuota = ? ORDER BY id_pago DESC", (id_cuota,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def delete_acp_pago(id_pago: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Check if there is a file path to delete
+    cursor.execute("SELECT ruta_comprobante FROM acp_pagos WHERE id_pago = ?", (id_pago,))
+    row = cursor.fetchone()
+    if row and row['ruta_comprobante']:
+        import os
+        if os.path.exists(row['ruta_comprobante']):
+            try:
+                os.remove(row['ruta_comprobante'])
+            except Exception:
+                pass
+    cursor.execute("DELETE FROM acp_pagos WHERE id_pago = ?", (id_pago,))
+    conn.commit()
+    conn.close()
+
+def update_acp_pago(id_pago: int, cantidad_pagada: float, cantidad_ves: float = 0.0, tasa_cambio: float = 0.0):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE acp_pagos SET cantidad_pagada = ?, cantidad_ves = ?, tasa_cambio = ? WHERE id_pago = ?",
+        (cantidad_pagada, cantidad_ves, tasa_cambio, id_pago)
+    )
+    conn.commit()
+    conn.close()

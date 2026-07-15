@@ -101,6 +101,9 @@ class SidebarTabView:
         self.buttons = {}
         self.active_tab = None
 
+        self.ui_order = []  # list of tuples: ('tab', name) or ('group', name)
+        self.groups = {}    # name -> dict
+
         self._build_sidebar_header()
 
     def _build_sidebar_header(self):
@@ -174,7 +177,56 @@ class SidebarTabView:
         self.avatar_canvas.create_oval(40, 30, 70, 60, fill="#ffffff", outline="")
         self.avatar_canvas.create_arc(25, 65, 85, 125, start=0, extent=180, fill="#ffffff", outline="")
 
-    def add(self, name):
+    def add_group(self, name, icon_text):
+        btn = ctk.CTkButton(
+            self.sidebar_parent,
+            text=icon_text + "  ▼",
+            anchor="w",
+            fg_color="transparent",
+            text_color="#ffffff",
+            hover_color="#212338",
+            height=42,
+            corner_radius=8,
+            font=("Arial", 11, "bold"),
+            command=lambda g=name: self.toggle_group(g)
+        )
+        self.groups[name] = {
+            'icon_text': icon_text,
+            'items': [],
+            'expanded': True,
+            'button': btn
+        }
+        self.ui_order.append(('group', name))
+        self._repack_buttons()
+
+    def toggle_group(self, name):
+        self.groups[name]['expanded'] = not self.groups[name]['expanded']
+        icon = self.groups[name]['icon_text']
+        arrow = "  ▼" if self.groups[name]['expanded'] else "  ▲"
+        self.groups[name]['button'].configure(text=icon + arrow)
+        self._repack_buttons()
+
+    def _repack_buttons(self):
+        for g in self.groups.values():
+            g['button'].pack_forget()
+        for b in self.buttons.values():
+            b.pack_forget()
+
+        for item_type, name in self.ui_order:
+            if item_type == 'tab':
+                if name == "Alojamiento":
+                    if self.active_tab in ["Servidor", "Alojamiento"]:
+                        self.buttons[name].pack(fill="x", padx=12, pady=4)
+                else:
+                    self.buttons[name].pack(fill="x", padx=12, pady=4)
+            elif item_type == 'group':
+                group = self.groups[name]
+                group['button'].pack(fill="x", padx=12, pady=4)
+                if group['expanded']:
+                    for item in group['items']:
+                        self.buttons[item].pack(fill="x", padx=12, pady=4)
+
+    def add(self, name, group=None):
         frame = ctk.CTkFrame(self.parent, fg_color="transparent")
         self.frames[name] = frame
 
@@ -199,6 +251,9 @@ class SidebarTabView:
         else:
             icon_text = f"•  {name.upper()}"
 
+        if group:
+            icon_text = "   " + icon_text
+
         btn = ctk.CTkButton(
             self.sidebar_parent,
             text=icon_text,
@@ -211,8 +266,14 @@ class SidebarTabView:
             font=("Arial", 11, "bold"),
             command=lambda n=name: self.set(n)
         )
-        btn.pack(fill="x", padx=12, pady=4)
         self.buttons[name] = btn
+
+        if group and group in self.groups:
+            self.groups[group]['items'].append(name)
+        else:
+            self.ui_order.append(('tab', name))
+
+        self._repack_buttons()
         return frame
 
     def tab(self, name):
@@ -224,7 +285,8 @@ class SidebarTabView:
             f.pack_forget()
         
         # Show selected frame
-        self.frames[name].pack(fill="both", expand=True)
+        if name in self.frames:
+            self.frames[name].pack(fill="both", expand=True)
 
         # Update button colors
         for tab_name, btn in self.buttons.items():
@@ -233,21 +295,15 @@ class SidebarTabView:
             else:
                 btn.configure(fg_color="transparent", text_color="#8c8da5")
 
-        # Manejo del submenu Alojamiento
-        alojamiento_btn = self.buttons.get("Alojamiento")
-        if alojamiento_btn and "Servidor" in self.buttons:
-            if name in ["Servidor", "Alojamiento"]:
-                alojamiento_btn.pack(fill="x", padx=12, pady=4, after=self.buttons["Servidor"])
-            else:
-                alojamiento_btn.pack_forget()
-
         self.active_tab = name
+        self._repack_buttons()
+
         # Refresh dashboard if entering Inicio
         if name == "Inicio" and hasattr(self.app_instance, "_refresh_dashboard"):
             self.app_instance._refresh_dashboard()
+from .acp.frontend import ACPMixin
 
-
-class AttendanceApp(GuiArchitect):
+class AttendanceApp(GuiArchitect, ACPMixin):
     def __init__(self, username=None, user_role=None):
         init_db()
         title = f"{APP_NAME} - Control de Estudiantes - {username}" if username else f"{APP_NAME} - Control de Estudiantes y Asistencias"
@@ -268,6 +324,7 @@ class AttendanceApp(GuiArchitect):
         self.notes_filter_period_options = {}
         self.units_filter_semester_options = {}
         self.units_filter_period_options = {}
+        self.note_unit_var = ctk.StringVar(value="")
 
         # Configurar la cuadricula de body para separar la barra lateral del contenido
         self.body.grid_columnconfigure(0, weight=0)
@@ -283,12 +340,14 @@ class AttendanceApp(GuiArchitect):
         self.tabview = SidebarTabView(self.main_content_container, self.sidebar_frame, self)
         self.tabview.add("Servidor")
         self.tabview.add("Alojamiento")
-        self.tabview.add("Inicio")
-        self.tabview.add("Estudiantes")
-        self.tabview.add("Asistencia")
-        self.tabview.add("Notas")
-        self.tabview.add("Unidades")
-        self.tabview.add("Administración")
+        self.tabview.add("ACP")
+        self.tabview.add_group("Educación", "🎓  EDUCACIÓN")
+        self.tabview.add("Inicio", group="Educación")
+        self.tabview.add("Estudiantes", group="Educación")
+        self.tabview.add("Asistencia", group="Educación")
+        self.tabview.add("Notas", group="Educación")
+        self.tabview.add("Unidades", group="Educación")
+        self.tabview.add("Administración", group="Educación")
 
         self._build_server_tab()
         self._build_alojamiento_tab()
@@ -298,6 +357,7 @@ class AttendanceApp(GuiArchitect):
         self._build_notes_tab()
         self._build_units_tab()
         self._build_admin_tab()
+        self._build_acp_tab()
         self.refresh_semesters()
         self.refresh_attendance_filters()
         self.refresh_notes_filters()
